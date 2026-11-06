@@ -5,10 +5,18 @@ const { HttpError, DAY_MS, round, uid, assert } = require('./util');
 const { Ledger, HQ, generateKeyPair } = require('./blockchain');
 const inv = require('./inventory');
 const { buildSeedData } = require('./seed');
+const { createPriceFeed, simulatedSource, httpSource } = require('./prices');
 
 const OPEN_PO = ['draft', 'sent'];
 
-function createApp({ dataDir, now = () => Date.now() } = {}) {
+function createApp({
+  dataDir,
+  now = () => Date.now(),
+  livePrices = false,
+  priceFeedUrl,
+  priceIntervalMs = 5000,
+  onPriceTick = () => {},
+} = {}) {
   const dbFile = path.join(dataDir, 'db.json');
   // Private keys are kept apart from the shared data. In production each branch
   // would hold only its own key (e.g. in an HSM / KMS) and HQ's key stays at HQ.
@@ -37,11 +45,18 @@ function createApp({ dataDir, now = () => Date.now() } = {}) {
       keys = JSON.parse(fs.readFileSync(keyFile, 'utf8'));
       ledger = new Ledger(db.chain, db.hqPublicKey);
     } else {
-      reset();
+      reseed();
     }
   }
 
   function reset() {
+    reseed();
+    feed.reset();
+    feed.warmup();
+    return overview();
+  }
+
+  function reseed() {
     db = buildSeedData(now());
     keys = { hq: generateKeyPair(), branches: {} };
     for (const b of db.branches) keys.branches[b.id] = generateKeyPair();
@@ -56,7 +71,6 @@ function createApp({ dataDir, now = () => Date.now() } = {}) {
     writeAtomic(keyFile, keys);
     save();
     seedActivity();
-    return overview();
   }
 
   /** A little ledger + purchasing history so every state is visible in the demo. */
@@ -372,6 +386,238 @@ function createApp({ dataDir, now = () => Date.now() } = {}) {
     return ledger.chain.slice().reverse();
   }
 
+  // ---------- editable master data (menu, ingredients, suppliers, branches) ----------
+  const slug = (v) => String(v || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
+  function uniqueId(list, name) {
+    const base = slug(name);
+    let id = base;
+    for (let n = 2; list.some((x) => x.id === id); n++) id = `${base}-${n}`;
+    return id;
+  }
+  function text(v, field, { required = true, max = 80 } = {}) {
+    const out = String(v ?? '').trim();
+    assert(!required || out, 400, `${field} is required`);
+    assert(out.length <= max, 400, `${field} must be at most ${max} characters`);
+    return out;
+  }
+  function number(v, field, { min = 0, max = Infinity, gt = false } = {}) {
+    const n = Number(v);
+    assert(v !== '' && v !== null && Number.isFinite(n) && (gt ? n > min : n >= min) && n <= max, 400,
+      `${field} must be a number ${gt ? '>' : '≥'} ${min}${max !== Infinity ? ` and ≤ ${max}` : ''}`);
+    return n;
+  }
+  const find404 = (list, id, what) => {
+    const x = list.find((i) => i.id === id);
+    assert(x, 404, `Unknown ${what}: ${id}`);
+    return x;
+  };
+  const openTransfersWith = (ingredientId) =>
+    ledger.transfers().some((t) => ['requested', 'in_transit'].includes(t.status) && t.lines.some((l) => l.ingredientId === ingredientId));
+
+  function saveIngredient(id, body = {}) {
+    const data = {
+      name: text(body.name, 'Name'),
+      unit: text(body.unit, 'Unit', { max: 12 }),
+      category: text(body.category, 'Category', { max: 40 }),
+      shelfLifeDays: number(body.shelfLifeDays, 'Shelf life (days)', { min: 0, gt: true }),
+    };
+    if (id) {
+      const ing = find404(db.ingredients, id, 'ingredient');
+      Object.assign(ing, data);
+      save();
+      return ing;
+    }
+    const ing = { id: uniqueId(db.ingredients, data.name), ...data };
+    db.ingredients.push(ing);
+    for (const b of db.branches) stockOf(b.id)[ing.id] = 0;
+    save();
+    return ing;
+  }
+
+  function deleteIngredient(id) {
+    find404(db.ingredients, id, 'ingredient');
+    const usedIn = db.menu.filter((m) => m.recipe.some((r) => r.ingredientId === id)).map((m) => m.name);
+    assert(!usedIn.length, 409, `Still used in: ${usedIn.join(', ')}. Remove it from those recipes first.`);
+    assert(!db.purchaseOrders.some((p) => OPEN_PO.includes(p.status) && p.lines.some((l) => l.ingredientId === id)), 409,
+      'There are open purchase orders for this ingredient');
+    assert(!openTransfersWith(id), 409, 'There are open transfers for this ingredient');
+    db.ingredients = db.ingredients.filter((i) => i.id !== id);
+    for (const s of db.suppliers) s.catalog = s.catalog.filter((c) => c.ingredientId !== id);
+    for (const b of Object.keys(db.stock)) delete db.stock[b][id];
+    save();
+    return { deleted: id };
+  }
+
+  function cleanRecipe(recipe) {
+    assert(Array.isArray(recipe) && recipe.length > 0, 400, 'A dish needs at least one ingredient in its recipe');
+    const merged = new Map();
+    for (const r of recipe) {
+      ingredient(r.ingredientId);
+      merged.set(r.ingredientId, round((merged.get(r.ingredientId) || 0) + number(r.qty, `Quantity of ${r.ingredientId}`, { gt: true }), 4));
+    }
+    return [...merged].map(([ingredientId, qty]) => ({ ingredientId, qty }));
+  }
+
+  function saveMenuItem(id, body = {}) {
+    const data = {
+      name: text(body.name, 'Dish name'),
+      price: round(number(body.price, 'Price'), 2),
+      recipe: cleanRecipe(body.recipe),
+    };
+    if (id) {
+      const m = find404(db.menu, id, 'menu item');
+      Object.assign(m, data);
+      save();
+      return m;
+    }
+    const m = { id: uniqueId(db.menu, data.name), ...data };
+    db.menu.push(m);
+    save();
+    return m;
+  }
+
+  function deleteMenuItem(id) {
+    find404(db.menu, id, 'menu item');
+    db.menu = db.menu.filter((m) => m.id !== id);
+    save();
+    return { deleted: id };
+  }
+
+  function cleanCatalog(catalog = [], existing = []) {
+    assert(Array.isArray(catalog), 400, 'Catalog must be a list');
+    const seen = new Set();
+    return catalog.map((c) => {
+      ingredient(c.ingredientId);
+      assert(!seen.has(c.ingredientId), 400, `${ingName(c.ingredientId)} is listed twice`);
+      seen.add(c.ingredientId);
+      const listPrice = round(number(c.unitPrice, `Price of ${ingName(c.ingredientId)}`, { gt: true }), 2);
+      const prev = existing.find((x) => x.ingredientId === c.ingredientId);
+      // Editing the list price resets the live quote to it; otherwise keep the live price running.
+      const unchanged = prev && (prev.basePrice ?? prev.unitPrice) === listPrice;
+      return {
+        ingredientId: c.ingredientId,
+        unitPrice: unchanged ? prev.unitPrice : listPrice,
+        basePrice: listPrice,
+        leadTimeDays: number(c.leadTimeDays, 'Lead time (days)'),
+        minOrderQty: number(c.minOrderQty ?? 0, 'Minimum order'),
+      };
+    });
+  }
+  const ingName = (id) => db.ingredients.find((i) => i.id === id)?.name || id;
+
+  function saveSupplier(id, body = {}) {
+    const existing = id ? find404(db.suppliers, id, 'supplier') : null;
+    const data = {
+      name: text(body.name, 'Supplier name'),
+      contact: text(body.contact, 'Contact', { required: false, max: 120 }),
+      rating: round(number(body.rating ?? 0, 'Rating', { max: 5 }), 1),
+      onTimeRate: round(number(body.onTimeRate ?? 0.9, 'On-time rate', { max: 1 }), 3),
+      trusted: Boolean(body.trusted),
+      catalog: cleanCatalog(body.catalog, existing?.catalog),
+    };
+    if (existing) {
+      Object.assign(existing, data);
+      save();
+      return existing;
+    }
+    const s = { id: uniqueId(db.suppliers, data.name), ...data };
+    db.suppliers.push(s);
+    save();
+    return s;
+  }
+
+  function deleteSupplier(id) {
+    find404(db.suppliers, id, 'supplier');
+    assert(!db.purchaseOrders.some((p) => p.supplierId === id && OPEN_PO.includes(p.status)), 409,
+      'This supplier has open purchase orders. Receive or cancel them first.');
+    db.suppliers = db.suppliers.filter((s) => s.id !== id);
+    save();
+    return { deleted: id };
+  }
+
+  /** New branches get their own signing key and are admitted to the ledger by HQ. */
+  function createBranch(body = {}) {
+    const name = text(body.name, 'Branch name', { max: 60 });
+    const location = text(body.location, 'Location', { required: false, max: 80 });
+    const id = uniqueId([...db.branches, ...[...ledger.state.members.keys()].map((k) => ({ id: k }))], name);
+    keys.branches[id] = generateKeyPair();
+    writeAtomic(keyFile, keys);
+    ledger.append({ type: 'MEMBER_ADD', payload: { members: [{ branchId: id, name, publicKey: keys.branches[id].publicKey }] } }, HQ, keys.hq.privateKey, iso());
+    const b = { id, name, location, settings: { safetyDays: 2, targetDays: 5, maxDays: 14 } };
+    db.branches.push(b);
+    db.stock[id] = Object.fromEntries(db.ingredients.map((i) => [i.id, 0]));
+    save();
+    return b;
+  }
+
+  function updateBranch(id, body = {}) {
+    const b = branch(id);
+    if (body.name !== undefined) b.name = text(body.name, 'Branch name', { max: 60 });
+    if (body.location !== undefined) b.location = text(body.location, 'Location', { required: false, max: 80 });
+    save();
+    return b;
+  }
+
+  function updateMeta(body = {}) {
+    if (body.chainName !== undefined) db.meta.chainName = text(body.chainName, 'Business name', { max: 80 });
+    if (body.currency !== undefined) db.meta.currency = text(body.currency, 'Currency', { max: 6 }).toUpperCase();
+    save();
+    return db.meta;
+  }
+
+  // ---------- export / import (work on a draft data set, share it, load it back) ----------
+  const DATA_KEYS = ['meta', 'branches', 'ingredients', 'menu', 'suppliers', 'stock', 'orders', 'adjustments', 'purchaseOrders'];
+
+  function exportData() {
+    return {
+      format: 'stockchain/v1',
+      exportedAt: iso(),
+      data: Object.fromEntries(DATA_KEYS.map((k) => [k, db[k]])),
+      ledger: ledger.chain, // for reference; signatures cannot be re-used without the original keys
+    };
+  }
+
+  function importData(file = {}) {
+    const d = file.data || file;
+    for (const k of ['branches', 'ingredients', 'menu', 'suppliers']) assert(Array.isArray(d[k]), 400, `Import is missing "${k}"`);
+    assert(d.branches.length > 0, 400, 'Import needs at least one branch');
+    const ingIds = new Set(d.ingredients.map((i) => i.id));
+    for (const m of d.menu) {
+      for (const r of m.recipe || []) assert(ingIds.has(r.ingredientId), 400, `Dish "${m.name}" uses unknown ingredient ${r.ingredientId}`);
+    }
+    for (const s of d.suppliers) {
+      for (const c of s.catalog || []) assert(ingIds.has(c.ingredientId), 400, `Supplier "${s.name}" lists unknown ingredient ${c.ingredientId}`);
+    }
+    const next = {
+      meta: { chainName: 'My Restaurant Group', currency: 'AED', ...(d.meta || {}), importedAt: iso() },
+      branches: d.branches.map((b) => ({ location: '', ...b, settings: { safetyDays: 2, targetDays: 5, maxDays: 14, ...(b.settings || {}) } })),
+      ingredients: d.ingredients,
+      menu: d.menu,
+      suppliers: d.suppliers.map((s) => ({ contact: '', rating: 0, onTimeRate: 0.9, trusted: false, catalog: [], ...s })),
+      stock: d.stock || {},
+      orders: d.orders || [],
+      adjustments: d.adjustments || [],
+      purchaseOrders: d.purchaseOrders || [],
+      chain: [],
+    };
+    for (const b of next.branches) next.stock[b.id] ||= {};
+    // A fresh ledger is started: private keys are never exported, so old blocks can't be re-signed.
+    db = next;
+    keys = { hq: generateKeyPair(), branches: {} };
+    for (const b of db.branches) keys.branches[b.id] = generateKeyPair();
+    db.hqPublicKey = keys.hq.publicKey;
+    ledger = Ledger.create({
+      hqKeys: keys.hq,
+      members: db.branches.map((b) => ({ branchId: b.id, name: b.name, publicKey: keys.branches[b.id].publicKey })),
+      timestamp: iso(),
+    });
+    writeAtomic(keyFile, keys);
+    save();
+    feed.reset();
+    feed.warmup();
+    return overview();
+  }
+
   // ---------- overview ----------
   function overview() {
     const reports = allReports();
@@ -402,7 +648,25 @@ function createApp({ dataDir, now = () => Date.now() } = {}) {
     };
   }
 
+  // ---------- live prices ----------
+  let lastPriceSave = 0;
+  const feed = createPriceFeed({
+    getDb: () => db,
+    source: priceFeedUrl ? httpSource(priceFeedUrl) : simulatedSource(),
+    now,
+    intervalMs: priceIntervalMs,
+    onTick: (snap) => {
+      if (Date.now() - lastPriceSave > 30000) {
+        lastPriceSave = Date.now();
+        save();
+      }
+      onPriceTick(snap);
+    },
+  });
+
   load();
+  feed.warmup();
+  if (livePrices) feed.start();
 
   return {
     get db() { return db; },
@@ -417,6 +681,15 @@ function createApp({ dataDir, now = () => Date.now() } = {}) {
     updateSupplier, createPurchaseOrder, autoReplenish, sendPurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder, listPurchaseOrders,
     requestTransfer, dispatchTransfer, receiveTransfer, rejectTransfer, cancelTransfer, listTransfers, suggestions,
     ledgerBlocks, verifyLedger: () => ledger.verify(),
+    saveIngredient, deleteIngredient, saveMenuItem, deleteMenuItem, saveSupplier, deleteSupplier,
+    createBranch, updateBranch, updateMeta, exportData, importData,
+    prices: {
+      snapshot: () => feed.snapshot(),
+      tick: () => feed.tick(),
+      start: () => (feed.start(), feed.snapshot().status),
+      stop: () => (feed.stop(), feed.snapshot().status),
+    },
+    close: () => feed.stop(),
     HQ,
   };
 }

@@ -174,3 +174,44 @@ dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4
   .tabs { order: 3; width: 100%; }
   .hide-sm { display: none; }
 }
+
+/* ---------- live prices ---------- */
+.live-pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+.live-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.live-pill.on { color: var(--green); }
+.live-pill.on .dot { background: var(--green); animation: pulse 1.6s infinite; }
+.live-pill.err { color: var(--red); }
+.live-pill.err .dot { background: var(--red); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 60%, transparent); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.spark { width: 120px; height: 28px; display: block; }
+.spark polyline { fill: none; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.up { color: var(--red); }      /* price up = cost up = bad for a restaurant */
+.down { color: var(--green); }
+.flat { color: var(--muted); }
+.spark.up polyline { stroke: var(--red); } .spark.down polyline { stroke: var(--green); } .spark.flat polyline { stroke: var(--muted); }
+td.flash-up { animation: flashUp 1.2s ease-out; }
+td.flash-down { animation: flashDown 1.2s ease-out; }
+@keyframes flashUp { from { background: var(--red-soft); } to { background: transparent; } }
+@keyframes flashDown { from { background: var(--green-soft); } to { background: transparent; } }
+.quotes { display: flex; gap: 4px; flex-wrap: wrap; }
+.quote { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); white-space: nowrap; }
+.quote.best { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.quote.untrusted { text-decoration: line-through; opacity: .6; }
+.meter { width: 100px; height: 6px; border-radius: 4px; background: var(--grey-soft); overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }
+.meter > i { display: block; height: 100%; }
+
+/* ---------- setup / editing ---------- */
+.edit-rows { display: grid; gap: 6px; }
+.edit-row { display: grid; gap: 6px; align-items: center; grid-template-columns: minmax(0, 2fr) minmax(70px, 1fr) 32px; }
+.edit-row.cat { grid-template-columns: minmax(0, 2fr) repeat(3, minmax(60px, 1fr)) 32px; }
+.edit-row .btn { padding: 4px 0; }
+.edit-head { font-size: 11px; color: var(--muted); }
+dialog.wide { width: min(720px, calc(100vw - 32px)); }
+dialog form { max-height: calc(100vh - 64px); overflow-y: auto; }
+.check { display: flex !important; flex-direction: row; gap: 8px; align-items: center; font-size: 13px !important; color: var(--text) !important; }
+.danger-zone { border-color: color-mix(in srgb, var(--red) 35%, var(--border)); }
+@media (max-width: 720px) {
+  .edit-row.cat { grid-template-columns: 1fr 1fr 32px; }
+  .edit-row.cat > :first-child { grid-column: 1 / -1; }
+  .live-pill { order: 2; }
+}

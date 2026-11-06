@@ -11,12 +11,18 @@ const state = {
   cart: {},
   invFilter: 'all',
   invSearch: '',
+  prices: null,
+  prevPrices: {},
+  priceSearch: '',
+  priceCat: 'all',
+  setupTab: 'menu',
 };
 
 // ---------- helpers ----------
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (n, d = 1) => (n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: d }));
+const price = (n) => (n == null ? '—' : `${state.meta.currency || ''} ${Number(n).toFixed(2)}`);
 const money = (n) => `${state.meta.currency || ''} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 const when = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
 const branchName = (id) => (id === 'HQ' ? 'HQ' : state.branches.find((b) => b.id === id)?.name || id);
@@ -62,16 +68,34 @@ async function act(fn, okMsg) {
   render();
 }
 
-function modal(html, onSubmit) {
+/**
+ * Open a form dialog. `onSubmit(data, form)` may throw to keep the dialog open.
+ * Row editors: an element with [data-rows="name"] holds rows; a button with
+ * [data-add-row="name"] appends ROW_TEMPLATES[name](); [data-del-row] removes its row.
+ */
+const ROW_TEMPLATES = {};
+function modal(html, onSubmit, { wide = false } = {}) {
   const dlg = $('#modal');
   const form = $('#modalForm');
+  dlg.classList.toggle('wide', wide);
   form.innerHTML = html;
+  form.onclick = (ev) => {
+    const add = ev.target.closest('[data-add-row]');
+    const del = ev.target.closest('[data-del-row]');
+    if (add) {
+      ev.preventDefault();
+      form.querySelector(`[data-rows="${add.dataset.addRow}"]`).insertAdjacentHTML('beforeend', ROW_TEMPLATES[add.dataset.addRow]());
+    } else if (del) {
+      ev.preventDefault();
+      del.closest('.edit-row').remove();
+    }
+  };
   form.onsubmit = async (ev) => {
     if (ev.submitter?.value === 'cancel') return;
     ev.preventDefault();
     const data = Object.fromEntries(new FormData(form));
     try {
-      await onSubmit(data);
+      await onSubmit(data, form);
       dlg.close();
       render();
     } catch (e) {
@@ -80,6 +104,19 @@ function modal(html, onSubmit) {
   };
   dlg.showModal();
 }
+
+/** Read every .edit-row inside [data-rows=name] as an object of its named fields. */
+const readRows = (form, name) =>
+  [...form.querySelectorAll(`[data-rows="${name}"] .edit-row`)].map((row) =>
+    Object.fromEntries([...row.querySelectorAll('[data-f]')].map((el) => [el.dataset.f, el.type === 'number' ? (el.value === '' ? '' : Number(el.value)) : el.value]))
+  );
+
+function confirmDialog(title, body, okLabel, onOk) {
+  modal(`<h2>${esc(title)}</h2><p style="margin:0">${body}</p>
+    <div class="foot"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary">${esc(okLabel)}</button></div>`, onOk);
+}
+
+const modalFoot = (label) => `<div class="foot"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary">${label}</button></div>`;
 
 const otherBranchOptions = (selected) =>
   state.branches.filter((b) => b.id !== state.branchId).map((b) => `<option value="${b.id}" ${b.id === selected ? 'selected' : ''}>${esc(b.name)}</option>`).join('');
@@ -453,9 +490,327 @@ views.transfers.bind = (root) => {
   }));
 };
 
+// ---------- live prices ----------
+const dirOf = (pct) => (pct > 0.05 ? 'up' : pct < -0.05 ? 'down' : 'flat');
+const pctText = (p) => `${p > 0.05 ? '▲' : p < -0.05 ? '▼' : '•'} ${Math.abs(p).toFixed(1)}%`;
+const shortName = (n) => { const w = n.split(' '); return w[0].length < 4 && w[1] ? `${w[0]} ${w[1]}` : w[0]; };
+function spark(values, cls) {
+  if (!values || values.length < 2) return '<span class="muted">—</span>';
+  const min = Math.min(...values);
+  const span = Math.max(...values) - min || 1;
+  const pts = values.map((v, i) => `${((i / (values.length - 1)) * 118 + 1).toFixed(1)},${(27 - ((v - min) / span) * 25).toFixed(1)}`).join(' ');
+  return `<svg class="spark ${cls}" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}"/></svg>`;
+}
+
+views.prices = async () => {
+  if (!state.prices) state.prices = await api('GET', '/api/prices');
+  const cats = [...new Set(state.ingredients.map((i) => i.category))];
+  return `
+  <div class="page-head">
+    <div><h1>Live prices</h1><p id="priceSub"></p></div>
+    <div class="actions"><button class="btn" id="tickBtn">Refresh now</button><button class="btn" id="feedToggle">Pause feed</button></div>
+  </div>
+  <section class="kpis" id="priceKpis"></section>
+  <div class="card">
+    <div class="card-head">
+      <div class="seg">${['all', ...cats].map((c) => `<button data-pcat="${esc(c)}" class="${state.priceCat === c ? 'on' : ''}">${c === 'all' ? 'All' : esc(c)}</button>`).join('')}</div>
+      <input id="priceSearch" type="search" placeholder="Search ingredient" value="${esc(state.priceSearch)}" />
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Ingredient</th><th class="num" title="Median of every supplier quote, trusted or not">Market price</th><th>Trend</th><th class="num">Change</th><th>Best trusted offer</th><th class="hide-sm">All supplier quotes</th></tr></thead>
+      <tbody id="priceRows"></tbody>
+    </table></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Menu cost at live prices</h2><span class="muted">food cost = recipe × best trusted price</span></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Dish</th><th class="num">Menu price</th><th class="num">Food cost</th><th>Food cost %</th><th class="num">Margin per dish</th></tr></thead>
+      <tbody id="menuCostRows"></tbody>
+    </table></div>
+  </div>`;
+};
+
+function paintPrices() {
+  const snap = state.prices;
+  const rowsEl = $('#priceRows');
+  if (!snap || !rowsEl) return;
+  const st = snap.status;
+  const src = st.mode === 'http' ? `feed ${esc(st.url)}` : 'simulated market (connect a real feed with PRICE_FEED_URL)';
+  $('#priceSub').innerHTML = `Source: ${src} · ${st.running ? `updates every ${st.intervalMs / 1000}s` : 'paused'} · last update ${snap.at ? new Date(snap.at).toLocaleTimeString() : '—'}${st.error ? ` · <span class="up">${esc(st.error)}</span>` : ''}`;
+  $('#feedToggle').textContent = st.running ? 'Pause feed' : 'Resume feed';
+
+  const ings = snap.ingredients.filter((i) => i.marketPrice != null);
+  const sorted = [...ings].sort((a, b) => b.changePct - a.changePct);
+  const up = ings.filter((i) => dirOf(i.changePct) === 'up').length;
+  const down = ings.filter((i) => dirOf(i.changePct) === 'down').length;
+  const avgFc = snap.menu.length ? snap.menu.reduce((s, m) => s + (m.foodCostPct || 0), 0) / snap.menu.length : 0;
+  const kpi = (label, value, sub, cls = '') => `<div class="card kpi"><div class="label">${label}</div><div class="value ${cls}">${value}</div><div class="sub">${sub}</div></div>`;
+  $('#priceKpis').innerHTML = sorted.length ? [
+    kpi('Biggest increase', pctText(sorted[0].changePct), `${esc(sorted[0].name)} · last ${snap.windowMinutes} min`, dirOf(sorted[0].changePct)),
+    kpi('Biggest drop', pctText(sorted.at(-1).changePct), `${esc(sorted.at(-1).name)} · last ${snap.windowMinutes} min`, dirOf(sorted.at(-1).changePct)),
+    kpi('Rising / falling', `${up} / ${down}`, `of ${ings.length} priced ingredients`),
+    kpi('Avg. food cost', `${avgFc.toFixed(1)}%`, 'of menu price, at live prices', avgFc > 35 ? 'up' : ''),
+  ].join('') : '';
+
+  const q = state.priceSearch.toLowerCase();
+  const shown = snap.ingredients.filter((i) => (state.priceCat === 'all' || i.category === state.priceCat) && (!q || i.name.toLowerCase().includes(q)));
+  rowsEl.innerHTML = shown.map((i) => {
+    const prev = state.prevPrices[i.ingredientId];
+    const flash = prev != null && i.marketPrice != null && prev !== i.marketPrice ? (i.marketPrice > prev ? 'flash-up' : 'flash-down') : '';
+    const d = dirOf(i.changePct);
+    return `<tr>
+      <td><strong>${esc(i.name)}</strong><span class="sub">${esc(i.category)} · per ${esc(i.unit)}</span></td>
+      <td class="num ${flash}"><strong>${price(i.marketPrice)}</strong><span class="sub ${dirOf(i.tickPct)}">${i.marketPrice == null ? 'no supplier' : pctText(i.tickPct) + ' last tick'}</span></td>
+      <td>${spark(i.history, d)}</td>
+      <td class="num ${d}">${i.marketPrice == null ? '—' : pctText(i.changePct)}</td>
+      <td>${i.bestTrusted ? `${price(i.bestTrusted.price)}<span class="sub">${esc(i.bestTrusted.supplierName)}</span>` : '<span class="muted">no trusted supplier</span>'}</td>
+      <td class="hide-sm"><div class="quotes">${i.quotes.map((x) => `<span class="quote ${x.trusted ? '' : 'untrusted'} ${i.bestTrusted?.supplierId === x.supplierId ? 'best' : ''}" title="List price ${price(x.basePrice)} · ${x.vsListPct > 0 ? '+' : ''}${x.vsListPct}% vs list${x.trusted ? '' : ' · not trusted'}">${esc(shortName(x.supplierName))} ${Number(x.price).toFixed(2)}</span>`).join('')}</div></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="empty">No ingredients match.</td></tr>';
+
+  $('#menuCostRows').innerHTML = snap.menu.map((m) => {
+    const pct = m.foodCostPct ?? 0;
+    const color = pct > 40 ? 'var(--red)' : pct > 30 ? 'var(--amber)' : 'var(--green)';
+    return `<tr><td><strong>${esc(m.name)}</strong></td><td class="num">${price(m.price)}</td><td class="num">${price(m.foodCost)}</td>
+      <td><span class="meter"><i style="width:${Math.min(100, pct)}%;background:${color}"></i></span>${pct.toFixed(1)}%</td>
+      <td class="num">${price(m.margin)}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="empty">No dishes yet – add some in Setup.</td></tr>';
+}
+
+views.prices.bind = (root) => {
+  paintPrices();
+  root.querySelectorAll('[data-pcat]').forEach((b) => b.addEventListener('click', () => {
+    state.priceCat = b.dataset.pcat;
+    root.querySelectorAll('[data-pcat]').forEach((x) => x.classList.toggle('on', x === b));
+    paintPrices();
+  }));
+  $('#priceSearch', root).addEventListener('input', (e) => { state.priceSearch = e.target.value; paintPrices(); });
+  $('#tickBtn', root).addEventListener('click', async () => {
+    try { onPrices(await api('POST', '/api/prices/tick')); } catch (e) { toast(e.message, true); }
+  });
+  $('#feedToggle', root).addEventListener('click', async () => {
+    try {
+      const status = await api('POST', `/api/prices/${state.prices.status.running ? 'stop' : 'start'}`);
+      state.prices.status = status;
+      updateLivePill();
+      paintPrices();
+    } catch (e) { toast(e.message, true); }
+  });
+};
+
+// ---------- setup (edit everything) ----------
+const UNITS = ['pcs', 'kg', 'g', 'L', 'ml', 'dozen', 'case', 'bottle'];
+const typeBtn = (attrs, label, cls = 'btn sm') => `<button type="button" class="${cls}" ${attrs}>${label}</button>`;
+
+ROW_TEMPLATES.recipe = (r = {}) => `<div class="edit-row">
+  <select data-f="ingredientId" aria-label="Ingredient">${ingredientOptions(null, r.ingredientId)}</select>
+  <input data-f="qty" type="number" step="any" min="0" value="${r.qty ?? ''}" placeholder="qty per dish" aria-label="Quantity per dish" required>
+  ${typeBtn('data-del-row title="Remove line"', '✕', 'btn danger')}</div>`;
+
+ROW_TEMPLATES.catalog = (c = {}) => `<div class="edit-row cat">
+  <select data-f="ingredientId" aria-label="Ingredient">${ingredientOptions(null, c.ingredientId)}</select>
+  <input data-f="unitPrice" type="number" step="0.01" min="0" value="${c.basePrice ?? c.unitPrice ?? ''}" placeholder="price" aria-label="List price" required>
+  <input data-f="leadTimeDays" type="number" step="1" min="0" value="${c.leadTimeDays ?? 1}" aria-label="Lead time days" required>
+  <input data-f="minOrderQty" type="number" step="any" min="0" value="${c.minOrderQty ?? 0}" aria-label="Minimum order">
+  ${typeBtn('data-del-row title="Remove item"', '✕', 'btn danger')}</div>`;
+
+function dishForm(m) {
+  modal(`<h2>${m ? `Edit ${esc(m.name)}` : 'Add a dish'}</h2>
+    <div class="row"><label>Dish name<input name="name" value="${esc(m?.name)}" required></label>
+    <label>Menu price (${esc(state.meta.currency)})<input name="price" type="number" step="0.01" min="0" value="${m?.price ?? ''}" required></label></div>
+    <div class="edit-rows"><div class="edit-head">Recipe – how much of each ingredient one portion uses (in the ingredient's unit)</div>
+      <div class="edit-rows" data-rows="recipe">${(m?.recipe || [{}]).map(ROW_TEMPLATES.recipe).join('')}</div>
+      <div>${typeBtn('data-add-row="recipe"', '+ Add ingredient')}</div></div>
+    ${modalFoot(m ? 'Save dish' : 'Add dish')}`,
+  async (d, form) => {
+    const body = { name: d.name, price: Number(d.price), recipe: readRows(form, 'recipe') };
+    await api(m ? 'PUT' : 'POST', m ? `/api/menu/${m.id}` : '/api/menu', body);
+    await refreshRefs();
+    toast(m ? 'Dish saved' : 'Dish added to the menu');
+  }, { wide: true });
+}
+
+function ingredientForm(i) {
+  const cats = [...new Set(state.ingredients.map((x) => x.category))];
+  modal(`<h2>${i ? `Edit ${esc(i.name)}` : 'Add an ingredient'}</h2>
+    <label>Name<input name="name" value="${esc(i?.name)}" required></label>
+    <div class="row"><label>Unit<input name="unit" list="unitList" value="${esc(i?.unit || 'kg')}" required></label>
+    <label>Category<input name="category" list="catList" value="${esc(i?.category)}" required></label></div>
+    <label>Shelf life (days)<input name="shelfLifeDays" type="number" min="1" step="1" value="${i?.shelfLifeDays ?? 7}" required></label>
+    <datalist id="unitList">${UNITS.map((u) => `<option value="${u}">`).join('')}</datalist>
+    <datalist id="catList">${cats.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+    ${i ? '' : '<p class="muted" style="margin:0">Starts at 0 in every branch. Add it to a supplier\'s catalog to get a live price, and to a dish\'s recipe so orders use it.</p>'}
+    ${modalFoot(i ? 'Save' : 'Add ingredient')}`,
+  async (d) => {
+    await api(i ? 'PUT' : 'POST', i ? `/api/ingredients/${i.id}` : '/api/ingredients', { ...d, shelfLifeDays: Number(d.shelfLifeDays) });
+    await refreshRefs();
+    toast(i ? 'Ingredient saved' : 'Ingredient added');
+  });
+}
+
+function supplierForm(s) {
+  modal(`<h2>${s ? `Edit ${esc(s.name)}` : 'Add a supplier'}</h2>
+    <div class="row"><label>Supplier name<input name="name" value="${esc(s?.name)}" required></label>
+    <label>Contact<input name="contact" value="${esc(s?.contact)}" placeholder="email or phone"></label></div>
+    <div class="row"><label>Rating (0–5)<input name="rating" type="number" min="0" max="5" step="0.1" value="${s?.rating ?? 4}"></label>
+    <label>On-time delivery %<input name="onTime" type="number" min="0" max="100" step="1" value="${Math.round((s?.onTimeRate ?? 0.9) * 100)}"></label></div>
+    <label class="check"><input type="checkbox" name="trusted" ${s?.trusted ?? true ? 'checked' : ''}> Trusted supplier – allowed to receive purchase orders</label>
+    <div class="edit-rows"><div class="edit-row cat edit-head"><span>Catalog item</span><span>List price</span><span>Lead days</span><span>Min order</span><span></span></div>
+      <div class="edit-rows" data-rows="catalog">${(s?.catalog || []).map(ROW_TEMPLATES.catalog).join('')}</div>
+      <div>${typeBtn('data-add-row="catalog"', '+ Add catalog item')}</div></div>
+    ${modalFoot(s ? 'Save supplier' : 'Add supplier')}`,
+  async (d, form) => {
+    const body = { name: d.name, contact: d.contact, rating: Number(d.rating), onTimeRate: Number(d.onTime) / 100, trusted: d.trusted === 'on', catalog: readRows(form, 'catalog') };
+    await api(s ? 'PUT' : 'POST', s ? `/api/suppliers/${s.id}` : '/api/suppliers', body);
+    toast(s ? 'Supplier saved' : 'Supplier added');
+  }, { wide: true });
+}
+
+function branchForm(b) {
+  modal(`<h2>${b ? `Edit ${esc(b.name)}` : 'Add a branch'}</h2>
+    <label>Branch name<input name="name" value="${esc(b?.name)}" required></label>
+    <label>Location<input name="location" value="${esc(b?.location)}"></label>
+    ${b ? '' : '<p class="muted" style="margin:0">The new branch gets its own signing key, and HQ adds it to the ledger with a new block, so it can send and receive transfers right away. Stock starts at 0.</p>'}
+    ${modalFoot(b ? 'Save' : 'Add branch')}`,
+  async (d) => {
+    const nb = await api(b ? 'PATCH' : 'POST', b ? `/api/branches/${b.id}` : '/api/branches', d);
+    await refreshRefs();
+    toast(b ? 'Branch saved' : `${nb.name} added and registered on the ledger`);
+  });
+}
+
+const setupPanels = {
+  async menu() {
+    const snap = await api('GET', '/api/prices');
+    const cost = Object.fromEntries(snap.menu.map((m) => [m.menuItemId, m]));
+    return `<div class="card"><div class="card-head"><h2>Menu &amp; recipes</h2>${typeBtn('data-act="add-dish"', 'Add dish', 'btn primary')}</div>
+      <div class="table-wrap"><table><thead><tr><th>Dish</th><th class="num">Price</th><th>Recipe (per portion)</th><th class="num">Food cost</th><th></th></tr></thead><tbody>
+      ${state.menu.map((m) => `<tr><td><strong>${esc(m.name)}</strong></td><td class="num">${price(m.price)}</td>
+        <td>${esc(m.recipe.map((r) => `${r.qty} ${ingUnit(r.ingredientId)} ${ingName(r.ingredientId)}`).join(', '))}</td>
+        <td class="num">${cost[m.id] ? `${cost[m.id].foodCostPct}%` : '—'}</td>
+        <td><div class="actions">${typeBtn(`data-act="edit-dish" data-id="${m.id}"`, 'Edit')}${typeBtn(`data-act="del-dish" data-id="${m.id}"`, 'Delete', 'btn sm danger')}</div></td></tr>`).join('') || '<tr><td colspan="5" class="empty">No dishes yet.</td></tr>'}
+      </tbody></table></div></div>`;
+  },
+  async ingredients() {
+    const suppliers = await api('GET', '/api/suppliers');
+    return `<div class="card"><div class="card-head"><h2>Ingredients</h2>${typeBtn('data-act="add-ing"', 'Add ingredient', 'btn primary')}</div>
+      <div class="table-wrap"><table><thead><tr><th>Ingredient</th><th>Unit</th><th>Category</th><th class="num">Shelf life</th><th>Used in</th><th>Suppliers</th><th></th></tr></thead><tbody>
+      ${state.ingredients.map((i) => {
+        const used = state.menu.filter((m) => m.recipe.some((r) => r.ingredientId === i.id)).length;
+        const sup = suppliers.filter((s) => s.catalog.some((c) => c.ingredientId === i.id)).length;
+        return `<tr><td><strong>${esc(i.name)}</strong></td><td>${esc(i.unit)}</td><td>${esc(i.category)}</td><td class="num">${i.shelfLifeDays}d</td>
+          <td>${used} dish${used === 1 ? '' : 'es'}</td><td>${sup || '<span class="up">none – no price</span>'}</td>
+          <td><div class="actions">${typeBtn(`data-act="edit-ing" data-id="${i.id}"`, 'Edit')}${typeBtn(`data-act="del-ing" data-id="${i.id}"`, 'Delete', 'btn sm danger')}</div></td></tr>`;
+      }).join('') || '<tr><td colspan="7" class="empty">No ingredients yet.</td></tr>'}
+      </tbody></table></div></div>`;
+  },
+  async suppliers() {
+    state.suppliers = await api('GET', '/api/suppliers');
+    return `<div class="card"><div class="card-head"><h2>Suppliers</h2>${typeBtn('data-act="add-sup"', 'Add supplier', 'btn primary')}</div>
+      <div class="table-wrap"><table><thead><tr><th>Supplier</th><th>Status</th><th class="num">Rating</th><th class="num">On time</th><th>Supplies</th><th></th></tr></thead><tbody>
+      ${state.suppliers.map((s) => `<tr><td><strong>${esc(s.name)}</strong><span class="sub">${esc(s.contact)}</span></td>
+        <td>${chip(s.trusted ? 'trusted' : 'untrusted', s.trusted ? 'Trusted' : 'Not trusted')}</td>
+        <td class="num">${s.rating.toFixed(1)}</td><td class="num">${Math.round(s.onTimeRate * 100)}%</td>
+        <td>${esc(s.catalog.map((c) => ingName(c.ingredientId)).join(', ')) || '<span class="muted">nothing yet</span>'}</td>
+        <td><div class="actions">${typeBtn(`data-act="edit-sup" data-id="${s.id}"`, 'Edit')}${typeBtn(`data-act="del-sup" data-id="${s.id}"`, 'Delete', 'btn sm danger')}</div></td></tr>`).join('') || '<tr><td colspan="6" class="empty">No suppliers yet.</td></tr>'}
+      </tbody></table></div></div>`;
+  },
+  async branches() {
+    return `<div class="card"><div class="card-head"><h2>Branches</h2>${typeBtn('data-act="add-branch"', 'Add branch', 'btn primary')}</div>
+      <div class="table-wrap"><table><thead><tr><th>Branch</th><th>Location</th><th>ID</th><th>Ledger</th><th></th></tr></thead><tbody>
+      ${state.branches.map((b) => `<tr><td><strong>${esc(b.name)}</strong></td><td>${esc(b.location) || '<span class="muted">—</span>'}</td><td class="mono">${esc(b.id)}</td>
+        <td>${chip('ok', 'Signing member')}</td><td>${typeBtn(`data-act="edit-branch" data-id="${b.id}"`, 'Edit')}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  },
+  async business() {
+    return `<section class="grid cols-2">
+      <div class="card"><div class="card-head"><h2>Business details</h2></div>
+        <form class="card-body edit-rows" id="metaForm">
+          <label class="edit-rows"><span class="edit-head">Business / group name</span><input name="chainName" value="${esc(state.meta.chainName)}" required></label>
+          <label class="edit-rows"><span class="edit-head">Currency code</span><input name="currency" value="${esc(state.meta.currency)}" maxlength="6" required></label>
+          <div><button class="btn primary">Save details</button></div>
+        </form></div>
+      <div class="card"><div class="card-head"><h2>Your data</h2></div>
+        <div class="card-body edit-rows">
+          <p class="muted" style="margin:0">Download everything (branches, menu, recipes, ingredients, suppliers, stock, orders, POs) as one JSON file. Edit it by hand or keep it as a backup, then import it here or on another machine.</p>
+          <div class="actions">${typeBtn('data-act="export"', 'Export JSON', 'btn primary')}
+            <label class="btn">Import JSON<input type="file" id="importFile" accept="application/json,.json" hidden></label></div>
+        </div></div>
+      <div class="card danger-zone"><div class="card-head"><h2>Start over</h2></div>
+        <div class="card-body edit-rows">
+          <p class="muted" style="margin:0"><b>Blank template</b>: one empty branch, no menu or suppliers, ready to fill with your own data. <b>Demo data</b>: puts back the three-branch sample group.</p>
+          <div class="actions">${typeBtn('data-act="blank"', 'Start from blank', 'btn danger')}${typeBtn('data-act="reset"', 'Restore demo data', 'btn danger')}</div>
+        </div></div>
+    </section>`;
+  },
+};
+
+views.setup = async () => {
+  const tabs = [['menu', 'Menu & recipes'], ['ingredients', 'Ingredients'], ['suppliers', 'Suppliers'], ['branches', 'Branches'], ['business', 'Business & data']];
+  return `
+  <div class="page-head"><div><h1>Setup</h1><p>Everything here can be edited, so you can turn the demo into your own business. Changes save straight away and show up on every screen.</p></div></div>
+  <div class="seg" style="overflow-x:auto;max-width:100%;justify-self:start">${tabs.map(([k, l]) => `<button data-stab="${k}" class="${state.setupTab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+  ${await setupPanels[state.setupTab]()}`;
+};
+
+views.setup.bind = (root) => {
+  root.querySelectorAll('[data-stab]').forEach((b) => b.addEventListener('click', () => { state.setupTab = b.dataset.stab; render(); }));
+  const del = (what, name, url, after) => confirmDialog(`Delete ${what}?`, `<b>${esc(name)}</b> will be removed. This can't be undone (but you can restore the demo data or import a backup).`, 'Delete',
+    async () => { await api('DELETE', url); if (after) await after(); toast(`${name} deleted`); });
+  const handlers = {
+    'add-dish': () => dishForm(),
+    'edit-dish': (id) => dishForm(state.menu.find((m) => m.id === id)),
+    'del-dish': (id) => del('dish', state.menu.find((m) => m.id === id).name, `/api/menu/${id}`, refreshRefs),
+    'add-ing': () => ingredientForm(),
+    'edit-ing': (id) => ingredientForm(state.ingredients.find((i) => i.id === id)),
+    'del-ing': (id) => del('ingredient', ingName(id), `/api/ingredients/${id}`, refreshRefs),
+    'add-sup': () => supplierForm(),
+    'edit-sup': (id) => supplierForm(state.suppliers.find((s) => s.id === id)),
+    'del-sup': (id) => del('supplier', state.suppliers.find((s) => s.id === id).name, `/api/suppliers/${id}`),
+    'add-branch': () => branchForm(),
+    'edit-branch': (id) => branchForm(state.branches.find((b) => b.id === id)),
+    export: async () => {
+      const data = await api('GET', '/api/export');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      a.download = `stockchain-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    },
+    blank: () => confirmDialog('Start from a blank template?', 'All current branches, menu, suppliers, stock, orders and ledger history will be replaced with one empty branch. Export first if you want to keep them.', 'Replace with blank',
+      async () => {
+        await api('POST', '/api/import', { data: { meta: state.meta, branches: [{ id: 'main-branch', name: 'Main branch', location: '' }], ingredients: [], menu: [], suppliers: [] } });
+        state.prices = null;
+        await refreshRefs();
+        state.setupTab = 'ingredients';
+        toast('Blank template ready – start by adding ingredients');
+      }),
+    reset: () => confirmDialog('Restore demo data?', 'Everything will be replaced with the three-branch sample group.', 'Restore demo',
+      async () => { await api('POST', '/api/reset'); state.prices = null; await refreshRefs(); toast('Demo data restored'); }),
+  };
+  root.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => handlers[b.dataset.act](b.dataset.id)));
+  $('#metaForm', root)?.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    act(async () => { await api('PATCH', '/api/meta', Object.fromEntries(new FormData(ev.target))); await refreshRefs(); }, 'Details saved');
+  });
+  $('#importFile', root)?.addEventListener('change', (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    act(async () => {
+      let json;
+      try { json = JSON.parse(await file.text()); } catch { throw new Error('That file is not valid JSON'); }
+      await api('POST', '/api/import', json);
+      state.prices = null;
+      await refreshRefs();
+    }, 'Data imported – a fresh ledger was started for the imported branches');
+  });
+};
+
 // ---------- shell ----------
 async function render() {
   const root = $('#view');
+  if (render.busy) return void (render.again = true);
+  render.busy = true;
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
   try {
     root.innerHTML = await views[state.view]();
@@ -464,6 +819,48 @@ async function render() {
     root.innerHTML = `<div class="card empty">Could not load: ${esc(e.message)}</div>`;
   }
   root.querySelectorAll('[data-switch]').forEach((b) => b.addEventListener('click', () => setBranch(b.dataset.switch)));
+  render.busy = false;
+  if (render.again) {
+    render.again = false;
+    render();
+  }
+}
+
+/** Reload reference data after edits in Setup (or an import). */
+async function refreshRefs() {
+  const [branches, ingredients, menu, ov] = await Promise.all([api('GET', '/api/branches'), api('GET', '/api/ingredients'), api('GET', '/api/menu'), api('GET', '/api/overview')]);
+  Object.assign(state, { branches, ingredients, menu, meta: ov.meta });
+  $('#chainName').textContent = ov.meta.chainName;
+  if (!branches.some((b) => b.id === state.branchId)) state.branchId = branches[0].id;
+  const sel = $('#branchSelect');
+  sel.innerHTML = branches.map((b) => `<option value="${b.id}">${esc(b.name)}</option>`).join('');
+  sel.value = state.branchId;
+}
+
+// ---------- live price stream ----------
+function updateLivePill() {
+  const pill = $('#livePill');
+  const st = state.prices?.status;
+  const connected = state.streamOpen;
+  pill.classList.toggle('on', Boolean(connected && st?.running && !st?.error));
+  pill.classList.toggle('err', Boolean(st?.error) || !connected);
+  $('#liveText').textContent = !connected ? 'Offline' : st?.error ? 'Feed error' : st?.running ? 'Live prices' : 'Prices paused';
+}
+
+function onPrices(snap) {
+  const prev = {};
+  for (const i of state.prices?.ingredients || []) prev[i.ingredientId] = i.marketPrice;
+  state.prevPrices = prev;
+  state.prices = snap;
+  updateLivePill();
+  if (state.view === 'prices') paintPrices();
+}
+
+function connectPrices() {
+  const es = new EventSource('/api/prices/stream');
+  es.addEventListener('open', () => { state.streamOpen = true; updateLivePill(); });
+  es.addEventListener('prices', (e) => { state.streamOpen = true; onPrices(JSON.parse(e.data)); });
+  es.addEventListener('error', () => { state.streamOpen = false; updateLivePill(); });
 }
 
 function setBranch(id) {
@@ -486,6 +883,8 @@ async function init() {
   sel.value = state.branchId;
   sel.addEventListener('change', () => setBranch(sel.value));
   document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { state.view = b.dataset.view; render(); }));
+  $('#livePill').addEventListener('click', () => { state.view = 'prices'; render(); });
+  connectPrices();
   render();
 }
 

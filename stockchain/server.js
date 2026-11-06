@@ -45,6 +45,28 @@ function buildRoutes(app) {
   on('POST', '/api/transfers/:id/reject', ({ p, body }) => app.rejectTransfer(p.id, body));
   on('POST', '/api/transfers/:id/cancel', ({ p, body }) => app.cancelTransfer(p.id, body));
 
+  // live prices
+  on('GET', '/api/prices', () => app.prices.snapshot());
+  on('POST', '/api/prices/tick', async () => (await app.prices.tick(), app.prices.snapshot()));
+  on('POST', '/api/prices/start', () => app.prices.start());
+  on('POST', '/api/prices/stop', () => app.prices.stop());
+
+  // editable master data
+  on('POST', '/api/ingredients', ({ body }) => app.saveIngredient(null, body));
+  on('PUT', '/api/ingredients/:id', ({ p, body }) => app.saveIngredient(p.id, body));
+  on('DELETE', '/api/ingredients/:id', ({ p }) => app.deleteIngredient(p.id));
+  on('POST', '/api/menu', ({ body }) => app.saveMenuItem(null, body));
+  on('PUT', '/api/menu/:id', ({ p, body }) => app.saveMenuItem(p.id, body));
+  on('DELETE', '/api/menu/:id', ({ p }) => app.deleteMenuItem(p.id));
+  on('POST', '/api/suppliers', ({ body }) => app.saveSupplier(null, body));
+  on('PUT', '/api/suppliers/:id', ({ p, body }) => app.saveSupplier(p.id, body));
+  on('DELETE', '/api/suppliers/:id', ({ p }) => app.deleteSupplier(p.id));
+  on('POST', '/api/branches', ({ body }) => app.createBranch(body));
+  on('PATCH', '/api/branches/:id', ({ p, body }) => app.updateBranch(p.id, body));
+  on('PATCH', '/api/meta', ({ body }) => app.updateMeta(body));
+  on('GET', '/api/export', () => app.exportData());
+  on('POST', '/api/import', ({ body }) => app.importData(body));
+
   on('GET', '/api/ledger', () => app.ledgerBlocks());
   on('GET', '/api/ledger/verify', () => app.verifyLedger());
   return routes;
@@ -55,7 +77,7 @@ function readBody(req) {
     let data = '';
     req.on('data', (c) => {
       data += c;
-      if (data.length > 1e6) reject(Object.assign(new Error('Body too large'), { status: 413 }));
+      if (data.length > 20e6) reject(Object.assign(new Error('Body too large'), { status: 413 }));
     });
     req.on('end', () => {
       if (!data) return resolve({});
@@ -84,11 +106,30 @@ function serveStatic(req, res, pathname) {
   fs.createReadStream(file).pipe(res);
 }
 
-function createServer(app) {
+/** Fan-out of live price snapshots to connected browsers (Server-Sent Events). */
+function createPriceHub() {
+  const clients = new Set();
+  return {
+    clients,
+    broadcast(snapshot) {
+      const msg = `event: prices\ndata: ${JSON.stringify(snapshot)}\n\n`;
+      for (const res of clients) res.write(msg);
+    },
+    attach(req, res, initial) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+      res.write(`retry: 3000\nevent: prices\ndata: ${JSON.stringify(initial)}\n\n`);
+      clients.add(res);
+      req.on('close', () => clients.delete(res));
+    },
+  };
+}
+
+function createServer(app, hub = createPriceHub()) {
   const routes = buildRoutes(app);
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
+    if (req.method === 'GET' && url.pathname === '/api/prices/stream') return hub.attach(req, res, app.prices.snapshot());
     const route = routes.find((r) => r.method === req.method && r.re.test(url.pathname));
     if (!route) return send(res, 404, { error: 'Not found' });
     try {
@@ -105,9 +146,19 @@ function createServer(app) {
 }
 
 if (require.main === module) {
-  const app = createApp({ dataDir: process.env.DATA_DIR || path.join(__dirname, 'data') });
+  const hub = createPriceHub();
+  const app = createApp({
+    dataDir: process.env.DATA_DIR || path.join(__dirname, 'data'),
+    livePrices: process.env.LIVE_PRICES !== 'off',
+    priceFeedUrl: process.env.PRICE_FEED_URL,
+    priceIntervalMs: Number(process.env.PRICE_INTERVAL_MS) || 5000,
+    onPriceTick: hub.broadcast,
+  });
   const port = Number(process.env.PORT) || 3000;
-  createServer(app).listen(port, () => console.log(`StockChain running at http://localhost:${port}`));
+  createServer(app, hub).listen(port, () => {
+    const feed = process.env.PRICE_FEED_URL ? `from ${process.env.PRICE_FEED_URL}` : '(simulated market)';
+    console.log(`StockChain running at http://localhost:${port} · live prices ${feed}`);
+  });
 }
 
-module.exports = { createServer };
+module.exports = { createServer, createPriceHub };

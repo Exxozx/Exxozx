@@ -22,7 +22,12 @@
       <button data-view="orders">Orders</button>
       <button data-view="suppliers">Suppliers</button>
       <button data-view="transfers">Transfers &amp; Ledger</button>
+      <button data-view="prices">Live prices</button>
+      <button data-view="setup">Setup</button>
     </nav>
+    <button class="live-pill" id="livePill" data-view-link="prices" title="Live price feed">
+      <span class="dot"></span><span id="liveText">Connecting…</span>
+    </button>
     <label class="branch-picker">
       <span>Acting as</span>
       <select id="branchSelect"></select>
