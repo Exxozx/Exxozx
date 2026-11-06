@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StockChain</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230f766e'/><path d='M8 11h16M8 16h16M8 21h10' stroke='white' stroke-width='3' stroke-linecap='round'/></svg>" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <strong>StockChain</strong>
+        <small id="chainName">Inventory &amp; supply network</small>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button data-view="dashboard" class="active">Dashboard</button>
+      <button data-view="inventory">Inventory</button>
+      <button data-view="orders">Orders</button>
+      <button data-view="suppliers">Suppliers</button>
+      <button data-view="transfers">Transfers &amp; Ledger</button>
+    </nav>
+    <label class="branch-picker">
+      <span>Acting as</span>
+      <select id="branchSelect"></select>
+    </label>
+  </header>
+
+  <main id="view" aria-live="polite"></main>
+
+  <div id="toast" class="toast" role="status"></div>
+  <dialog id="modal"><form method="dialog" id="modalForm"></form></dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
