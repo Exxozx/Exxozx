@@ -16,6 +16,10 @@
   --shadow: 0 1px 2px rgba(16, 24, 20, .06), 0 4px 16px rgba(16, 24, 20, .05);
   --radius: 12px;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --arabic: "Noto Kufi Arabic", "Geeza Pro", "Segoe UI", Tahoma, sans-serif;
+  --gutter: 24px;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -38,9 +42,13 @@
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
-  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 14px/1.5 var(--font);
 }
-h1, h2, h3 { margin: 0; line-height: 1.25; }
+h1, h2, h3 { margin: 0; line-height: 1.25; font-family: var(--display); letter-spacing: -0.01em; text-wrap: balance; }
+.wordmark { font-family: var(--display); font-size: 16px; letter-spacing: -0.01em; display: inline-flex; gap: 6px; align-items: baseline; }
+.wordmark .ar { font-family: var(--arabic); font-size: 13px; color: var(--accent); font-weight: 700; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 h1 { font-size: 22px; }
 h2 { font-size: 16px; }
 h3 { font-size: 14px; }
@@ -50,8 +58,11 @@ h3 { font-size: 14px; }
 
 /* ---------- top bar ---------- */
 .topbar {
-  position: sticky; top: 0; z-index: 5; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
-  padding: 10px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  padding-block: 10px;
+  padding-left: max(var(--gutter), env(safe-area-inset-left, 0px));
+  padding-right: max(var(--gutter), env(safe-area-inset-right, 0px));
+  background: var(--surface); border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; gap: 10px; align-items: center; margin-right: auto; }
 .brand small { display: block; color: var(--muted); font-size: 12px; }
@@ -65,7 +76,12 @@ h3 { font-size: 14px; }
 .branch-picker { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
 
 /* ---------- layout ---------- */
-main { max-width: 1280px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }
+main {
+  max-width: 1280px; margin: 0 auto; display: grid; gap: 20px; padding-block: 24px;
+  padding-left: max(var(--gutter), env(safe-area-inset-left, 0px));
+  padding-right: max(var(--gutter), env(safe-area-inset-right, 0px));
+}
+main > * { min-width: 0; }
 .page-head { display: flex; justify-content: space-between; align-items: end; gap: 12px; flex-wrap: wrap; }
 .page-head p { margin: 4px 0 0; color: var(--muted); }
 .grid { display: grid; gap: 16px; }
@@ -162,13 +178,13 @@ dialog form { display: grid; gap: 14px; padding: 20px; }
 dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 dialog .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
-.toast { position: fixed; bottom: 20px; left: 50%; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; transition: .2s; max-width: calc(100vw - 32px); z-index: 20; }
+.toast { position: fixed; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; transition: .2s; max-width: calc(100vw - 32px); z-index: 20; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .toast.error { background: var(--red); color: #fff; }
 
 @media (max-width: 720px) {
-  .topbar { padding: 10px 16px; }
-  main { padding: 16px; }
+  :root { --gutter: 16px; }
+  main { padding-block: 16px; }
   .cols-2, .cols-3 { grid-template-columns: 1fr; }
   .brand { margin-right: 0; flex: 1; }
   .tabs { order: 3; width: 100%; }

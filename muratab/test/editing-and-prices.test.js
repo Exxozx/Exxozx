@@ -9,7 +9,7 @@ const { createServer, createPriceHub } = require('../server');
 
 const NOW = Date.parse('2026-11-06T10:00:00Z');
 const freshApp = (opts = {}) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockchain-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muratab-'));
   return { app: createApp({ dataDir: dir, now: () => NOW, ...opts }), dir };
 };
 const row = (app, b, i) => app.inventory(b).find((r) => r.ingredientId === i);

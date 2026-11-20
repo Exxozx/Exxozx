@@ -1,5 +1,5 @@
 'use strict';
-const crypto = require('crypto');
+const { randomHex } = require('./crypto');
 
 class HttpError extends Error {
   constructor(status, message, details) {
@@ -17,7 +17,7 @@ function round(n, decimals = 3) {
 }
 
 function uid(prefix) {
-  return `${prefix}-${crypto.randomBytes(4).toString('hex')}`;
+  return `${prefix}-${randomHex(4)}`;
 }
 
 function assert(cond, status, message, details) {

@@ -1,6 +1,6 @@
-# StockChain
+# Muratab · مرتب
 
-Inventory management for restaurants and multi-branch chains.
+*Muratab* is Arabic for **neat**. It keeps a restaurant or a whole chain's stock in order.
 
 - **Tracks stock from the menu and orders.** Every dish has a recipe. Each order deducts the ingredients it uses, and an order is refused if a branch can't make it.
 - **Knows whether you have too much or too little.** Demand is forecast from the last 14 days of orders. Each ingredient is marked *out / critical / low / healthy / excess* using the supplier's lead time, safety days and shelf life.
@@ -9,17 +9,33 @@ Inventory management for restaurants and multi-branch chains.
 - **Fully editable.** The *Setup* tab lets you add, edit and delete dishes and their recipes, ingredients, suppliers and their catalogs, and branches. You can rename the business and change the currency, export everything to JSON and import it back, or start from a blank template. The demo data is just a starting point.
 - **Moves stock between branches on a blockchain.** Branches send and request stock through a shared, permissioned ledger. Every block is hash-linked and signed with the acting branch's Ed25519 key. It also suggests sending one branch's surplus to another branch's shortage before you buy more.
 
-## Run it
+## Try the prototype (no install)
 
-Requires Node.js 18+. There are no dependencies to install.
+Open **`dist/muratab.html`** in any modern browser (double-click it). That single file is the complete working app: the inventory engine, supplier ordering, live prices and the signed branch ledger all run inside the page. It needs no server and no internet (fonts fall back to system fonts offline). Your changes are saved in that browser. Use *Setup → Business & data* to export them or start again.
+
+## Run it as a server
+
+Requires Node.js 18+. Running the server needs no dependencies.
 
 ```bash
-cd stockchain
+cd muratab
 npm start          # http://localhost:3000
 npm test           # 19 tests: inventory, purchasing, transfers, ledger tampering, live prices, editing, import/export, HTTP + SSE
+npm install && npm run build   # rebuild dist/muratab.html after changing the code
 ```
 
-On first start it creates demo data for a three-branch chain (Downtown, Marina, Airport T3). That includes 14 days of order history, six suppliers (one untrusted) and some ledger activity. Data is stored in `stockchain/data/`. To start over, delete that folder or call `POST /api/reset`.
+### One codebase, two ways to run
+
+The business logic in `src/` is shared. Only two small modules differ:
+
+| Module | Server (`src/`) | Prototype (`web/`) |
+|---|---|---|
+| `crypto` | Node's built-in Ed25519 + SHA-256 | `@noble/ed25519` + `@noble/hashes` (audited, pure JS) |
+| `storage` | JSON files in `data/` | the browser's `localStorage` |
+
+`src/routes.js` defines the API once. The HTTP server serves it over the network, and the prototype calls it directly inside the page (`window.MuratabLocal`). `npm run build` bundles everything with esbuild into the single `dist/muratab.html`. Data from one doesn't carry over to the other except through *Export / Import*. The two use different key formats, so an import starts a fresh ledger either way.
+
+On first start it creates demo data for a three-branch chain (Downtown, Marina, Airport T3). That includes 14 days of order history, six suppliers (one untrusted) and some ledger activity. Data is stored in `muratab/data/`. To start over, delete that folder or call `POST /api/reset`.
 
 Use the **Acting as** selector to switch between branches. Each branch can only sign its own side of a transfer.
 
@@ -98,12 +114,18 @@ Sending a PO to a supplier is simulated (it returns a confirmation number). `sen
 ## Layout
 
 ```
-server.js           HTTP server + routes (Node built-ins only)
+server.js           HTTP server (Node built-ins only)
+build.js            builds the standalone prototype into dist/
+src/routes.js       the API, shared by server and prototype
+src/crypto.js       signing/hashing (Node)      web/crypto-browser.js  (browser)
+src/storage.js      JSON-file storage (Node)    web/storage-browser.js (browser)
+web/standalone.js   prototype entry: runs the back end in the page
 src/prices.js       live price feed (simulated or HTTP source)
 src/inventory.js    forecasting, status, supplier ranking, transfer matching
 src/blockchain.js   signed hash-chained ledger and verification
 src/app.js          business logic and persistence
 src/seed.js         demo chain data
-public/             web UI (vanilla JS)
+public/             web UI (vanilla JS), used by both
+dist/muratab.html   the built prototype – open it in a browser
 test/               node:test suite
 ```

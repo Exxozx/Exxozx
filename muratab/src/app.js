@@ -1,48 +1,37 @@
 'use strict';
-const fs = require('fs');
-const path = require('path');
 const { HttpError, DAY_MS, round, uid, assert } = require('./util');
 const { Ledger, HQ, generateKeyPair } = require('./blockchain');
 const inv = require('./inventory');
 const { buildSeedData } = require('./seed');
 const { createPriceFeed, simulatedSource, httpSource } = require('./prices');
+const { defaultStorage } = require('./storage');
 
 const OPEN_PO = ['draft', 'sent'];
 
 function createApp({
   dataDir,
+  storage = defaultStorage(dataDir),
   now = () => Date.now(),
   livePrices = false,
   priceFeedUrl,
   priceIntervalMs = 5000,
   onPriceTick = () => {},
 } = {}) {
-  const dbFile = path.join(dataDir, 'db.json');
-  // Private keys are kept apart from the shared data. In production each branch
-  // would hold only its own key (e.g. in an HSM / KMS) and HQ's key stays at HQ.
-  const keyFile = path.join(dataDir, 'keys.json');
   let db;
   let keys;
   let ledger;
 
   const iso = () => new Date(now()).toISOString();
 
-  function writeAtomic(file, data) {
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 1));
-    fs.renameSync(tmp, file);
-  }
-
   function save() {
     db.chain = ledger.chain;
-    writeAtomic(dbFile, db);
+    storage.saveDb(db);
   }
 
   function load() {
-    fs.mkdirSync(dataDir, { recursive: true });
-    if (fs.existsSync(dbFile) && fs.existsSync(keyFile)) {
-      db = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
-      keys = JSON.parse(fs.readFileSync(keyFile, 'utf8'));
+    const stored = storage.load();
+    if (stored) {
+      ({ db, keys } = stored);
       ledger = new Ledger(db.chain, db.hqPublicKey);
     } else {
       reseed();
@@ -67,8 +56,7 @@ function createApp({
       members: db.branches.map((b) => ({ branchId: b.id, name: b.name, publicKey: keys.branches[b.id].publicKey })),
       timestamp: t0,
     });
-    fs.mkdirSync(dataDir, { recursive: true });
-    writeAtomic(keyFile, keys);
+    storage.saveKeys(keys);
     save();
     seedActivity();
   }
@@ -541,7 +529,7 @@ function createApp({
     const location = text(body.location, 'Location', { required: false, max: 80 });
     const id = uniqueId([...db.branches, ...[...ledger.state.members.keys()].map((k) => ({ id: k }))], name);
     keys.branches[id] = generateKeyPair();
-    writeAtomic(keyFile, keys);
+    storage.saveKeys(keys);
     ledger.append({ type: 'MEMBER_ADD', payload: { members: [{ branchId: id, name, publicKey: keys.branches[id].publicKey }] } }, HQ, keys.hq.privateKey, iso());
     const b = { id, name, location, settings: { safetyDays: 2, targetDays: 5, maxDays: 14 } };
     db.branches.push(b);
@@ -570,7 +558,7 @@ function createApp({
 
   function exportData() {
     return {
-      format: 'stockchain/v1',
+      format: 'muratab/v1',
       exportedAt: iso(),
       data: Object.fromEntries(DATA_KEYS.map((k) => [k, db[k]])),
       ledger: ledger.chain, // for reference; signatures cannot be re-used without the original keys
@@ -611,7 +599,7 @@ function createApp({
       members: db.branches.map((b) => ({ branchId: b.id, name: b.name, publicKey: keys.branches[b.id].publicKey })),
       timestamp: iso(),
     });
-    writeAtomic(keyFile, keys);
+    storage.saveKeys(keys);
     save();
     feed.reset();
     feed.warmup();

@@ -1,5 +1,10 @@
 'use strict';
-/* StockChain web client – vanilla JS, no build step. */
+/*
+ * Muratab web client – vanilla JS, no build step.
+ * Talks to the HTTP server, or, in the standalone prototype build, straight to the
+ * same back end running inside the page (window.MuratabLocal).
+ */
+const LOCAL = window.MuratabLocal || null;
 
 const state = {
   view: 'dashboard',
@@ -34,14 +39,21 @@ const chip = (s, label) => `<span class="chip s-${esc(s)}">${esc(label || STATUS
 const linesText = (lines) => lines.map((l) => `${num(l.qty, 2)} ${ingUnit(l.ingredientId)} ${ingName(l.ingredientId)}`).join(', ');
 
 async function api(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    let msg = data.error || `Request failed (${res.status})`;
+  let status;
+  let data;
+  if (LOCAL) {
+    ({ status, data } = await LOCAL.request(method, path, body));
+  } else {
+    const res = await fetch(path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    status = res.status;
+    data = await res.json().catch(() => ({}));
+  }
+  if (status >= 400) {
+    let msg = data.error || `Request failed (${status})`;
     if (data.shortages) msg += ': ' + data.shortages.map((s) => `${ingName(s.ingredientId)} needs ${num(s.needed, 2)}, has ${num(s.available, 2)}`).join('; ');
     throw new Error(msg);
   }
@@ -535,7 +547,9 @@ function paintPrices() {
   const rowsEl = $('#priceRows');
   if (!snap || !rowsEl) return;
   const st = snap.status;
-  const src = st.mode === 'http' ? `feed ${esc(st.url)}` : 'simulated market (connect a real feed with PRICE_FEED_URL)';
+  const src = st.mode === 'http' ? `feed ${esc(st.url)}`
+    : LOCAL ? 'simulated market (the server version can connect a real supplier feed)'
+    : 'simulated market (connect a real feed with PRICE_FEED_URL)';
   $('#priceSub').innerHTML = `Source: ${src} · ${st.running ? `updates every ${st.intervalMs / 1000}s` : 'paused'} · last update ${snap.at ? new Date(snap.at).toLocaleTimeString() : '—'}${st.error ? ` · <span class="up">${esc(st.error)}</span>` : ''}`;
   $('#feedToggle').textContent = st.running ? 'Pause feed' : 'Resume feed';
 
@@ -732,9 +746,10 @@ const setupPanels = {
         </form></div>
       <div class="card"><div class="card-head"><h2>Your data</h2></div>
         <div class="card-body edit-rows">
-          <p class="muted" style="margin:0">Download everything (branches, menu, recipes, ingredients, suppliers, stock, orders, POs) as one JSON file. Edit it by hand or keep it as a backup, then import it here or on another machine.</p>
+          <p class="muted" style="margin:0">Export everything (branches, menu, recipes, ingredients, suppliers, stock, orders, POs) as JSON. Edit it by hand or keep it as a backup, then import it here or on another device.${LOCAL ? ` This prototype ${LOCAL.persistent ? 'saves your data in this browser only' : 'cannot save in this browser, so data is lost when you close the tab'}.` : ''}</p>
           <div class="actions">${typeBtn('data-act="export"', 'Export JSON', 'btn primary')}
-            <label class="btn">Import JSON<input type="file" id="importFile" accept="application/json,.json" hidden></label></div>
+            <label class="btn">Import file<input type="file" id="importFile" accept="application/json,.json" hidden></label>
+            ${typeBtn('data-act="paste"', 'Paste JSON', 'btn')}</div>
         </div></div>
       <div class="card danger-zone"><div class="card-head"><h2>Start over</h2></div>
         <div class="card-body edit-rows">
@@ -771,12 +786,43 @@ views.setup.bind = (root) => {
     'edit-branch': (id) => branchForm(state.branches.find((b) => b.id === id)),
     export: async () => {
       const data = await api('GET', '/api/export');
+      const text = JSON.stringify(data, null, 2);
+      if (LOCAL) {
+        // Downloads can be blocked where the prototype is embedded, so offer the JSON to copy.
+        modal(`<h2>Export data</h2><p class="muted" style="margin:0">Copy this and save it as a <span class="mono">.json</span> file. Use “Paste JSON” or “Import file” to load it back.</p>
+          <textarea id="exportText" readonly rows="12" class="mono" style="width:100%">${esc(text)}</textarea>
+          <div class="foot"><button class="btn" value="cancel" formnovalidate>Close</button><button class="btn primary">Copy to clipboard</button></div>`,
+        async () => {
+          const ta = $('#exportText');
+          try {
+            await navigator.clipboard.writeText(text);
+            toast('Copied – paste it into a .json file');
+          } catch {
+            ta.focus();
+            ta.select();
+            throw new Error('Copy is blocked here – the text is selected, press Ctrl/Cmd+C');
+          }
+        }, { wide: true });
+        return;
+      }
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-      a.download = `stockchain-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `muratab-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(a.href);
     },
+    paste: () => modal(`<h2>Paste exported data</h2>
+      <textarea id="pasteText" name="json" rows="12" class="mono" style="width:100%" placeholder='{"format":"muratab/v1", ...}' required></textarea>
+      <p class="muted" style="margin:0">This replaces the current data and starts a fresh ledger for the imported branches.</p>
+      ${modalFoot('Import')}`,
+    async (d) => {
+      let json;
+      try { json = JSON.parse(d.json); } catch { throw new Error('That is not valid JSON – paste the whole export'); }
+      await api('POST', '/api/import', json);
+      state.prices = null;
+      await refreshRefs();
+      toast('Data imported');
+    }, { wide: true }),
     blank: () => confirmDialog('Start from a blank template?', 'All current branches, menu, suppliers, stock, orders and ledger history will be replaced with one empty branch. Export first if you want to keep them.', 'Replace with blank',
       async () => {
         await api('POST', '/api/import', { data: { meta: state.meta, branches: [{ id: 'main-branch', name: 'Main branch', location: '' }], ingredients: [], menu: [], suppliers: [] } });
@@ -857,6 +903,11 @@ function onPrices(snap) {
 }
 
 function connectPrices() {
+  if (LOCAL) {
+    state.streamOpen = true;
+    LOCAL.subscribe(onPrices);
+    return;
+  }
   const es = new EventSource('/api/prices/stream');
   es.addEventListener('open', () => { state.streamOpen = true; updateLivePill(); });
   es.addEventListener('prices', (e) => { state.streamOpen = true; onPrices(JSON.parse(e.data)); });
@@ -867,7 +918,7 @@ function setBranch(id) {
   state.branchId = id;
   state.cart = {};
   $('#branchSelect').value = id;
-  try { localStorage.setItem('stockchain.branch', id); } catch {}
+  try { localStorage.setItem('muratab.branch', id); } catch {}
   render();
 }
 
@@ -876,7 +927,7 @@ async function init() {
   Object.assign(state, { branches, ingredients, menu, meta: ov.meta });
   $('#chainName').textContent = ov.meta.chainName;
   let saved = null;
-  try { saved = localStorage.getItem('stockchain.branch'); } catch {}
+  try { saved = localStorage.getItem('muratab.branch'); } catch {}
   state.branchId = branches.some((b) => b.id === saved) ? saved : branches[0].id;
   const sel = $('#branchSelect');
   sel.innerHTML = branches.map((b) => `<option value="${b.id}">${esc(b.name)}</option>`).join('');

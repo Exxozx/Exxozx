@@ -1,12 +1,9 @@
 'use strict';
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const { createApp } = require('./src/app');
-
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
-
+/**
+ * The Muratab API as plain functions: (method, url, body) -> { status, data }.
+ * Used by the HTTP server, and called directly by the standalone browser build
+ * so both share exactly the same behaviour.
+ */
 function buildRoutes(app) {
   const routes = [];
   const on = (method, pattern, handler) => {
@@ -72,93 +69,22 @@ function buildRoutes(app) {
   return routes;
 }
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (c) => {
-      data += c;
-      if (data.length > 20e6) reject(Object.assign(new Error('Body too large'), { status: 413 }));
-    });
-    req.on('end', () => {
-      if (!data) return resolve({});
-      try {
-        resolve(JSON.parse(data));
-      } catch {
-        reject(Object.assign(new Error('Invalid JSON body'), { status: 400 }));
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
-function send(res, status, payload) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify(payload));
-}
-
-function serveStatic(req, res, pathname) {
-  const file = path.normalize(path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname));
-  if (!file.startsWith(PUBLIC_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    return res.end('Not found');
-  }
-  res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
-  fs.createReadStream(file).pipe(res);
-}
-
-/** Fan-out of live price snapshots to connected browsers (Server-Sent Events). */
-function createPriceHub() {
-  const clients = new Set();
-  return {
-    clients,
-    broadcast(snapshot) {
-      const msg = `event: prices\ndata: ${JSON.stringify(snapshot)}\n\n`;
-      for (const res of clients) res.write(msg);
-    },
-    attach(req, res, initial) {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
-      res.write(`retry: 3000\nevent: prices\ndata: ${JSON.stringify(initial)}\n\n`);
-      clients.add(res);
-      req.on('close', () => clients.delete(res));
-    },
-  };
-}
-
-function createServer(app, hub = createPriceHub()) {
+function createRouter(app) {
   const routes = buildRoutes(app);
-  return http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://localhost');
-    if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
-    if (req.method === 'GET' && url.pathname === '/api/prices/stream') return hub.attach(req, res, app.prices.snapshot());
-    const route = routes.find((r) => r.method === req.method && r.re.test(url.pathname));
-    if (!route) return send(res, 404, { error: 'Not found' });
+  return async function route(method, url, body = {}) {
+    const u = new URL(url, 'http://local');
+    const r = routes.find((x) => x.method === method && x.re.test(u.pathname));
+    if (!r) return { status: 404, data: { error: 'Not found' } };
     try {
-      const m = url.pathname.match(route.re);
-      const p = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
-      const body = ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readBody(req) : {};
-      send(res, 200, await route.handler({ p, q: url.searchParams, body }));
+      const m = u.pathname.match(r.re);
+      const p = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
+      return { status: 200, data: await r.handler({ p, q: u.searchParams, body: body || {} }) };
     } catch (err) {
       const status = err.status || 500;
       if (status >= 500) console.error(err);
-      send(res, status, { error: err.message, ...(err.details || {}) });
+      return { status, data: { error: err.message, ...(err.details || {}) } };
     }
-  });
+  };
 }
 
-if (require.main === module) {
-  const hub = createPriceHub();
-  const app = createApp({
-    dataDir: process.env.DATA_DIR || path.join(__dirname, 'data'),
-    livePrices: process.env.LIVE_PRICES !== 'off',
-    priceFeedUrl: process.env.PRICE_FEED_URL,
-    priceIntervalMs: Number(process.env.PRICE_INTERVAL_MS) || 5000,
-    onPriceTick: hub.broadcast,
-  });
-  const port = Number(process.env.PORT) || 3000;
-  createServer(app, hub).listen(port, () => {
-    const feed = process.env.PRICE_FEED_URL ? `from ${process.env.PRICE_FEED_URL}` : '(simulated market)';
-    console.log(`StockChain running at http://localhost:${port} · live prices ${feed}`);
-  });
-}
-
-module.exports = { createServer, createPriceHub };
+module.exports = { createRouter };

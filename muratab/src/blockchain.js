@@ -12,7 +12,7 @@
  * - Transfer state is never stored separately: it is derived by replaying the
  *   chain, so the ledger is the single source of truth for inter-branch stock movement.
  */
-const crypto = require('crypto');
+const { sha256Hex: sha256, generateKeyPair, sign, verify: verifySignature } = require('./crypto');
 
 const HQ = 'HQ';
 const ZERO_HASH = '0'.repeat(64);
@@ -27,28 +27,6 @@ function canonical(value) {
       .join(',')}}`;
   }
   return JSON.stringify(value);
-}
-
-const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
-
-function generateKeyPair() {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
-  return {
-    publicKey: publicKey.export({ type: 'spki', format: 'pem' }),
-    privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }),
-  };
-}
-
-function sign(data, privateKeyPem) {
-  return crypto.sign(null, Buffer.from(data), privateKeyPem).toString('base64');
-}
-
-function verifySignature(data, signature, publicKeyPem) {
-  try {
-    return crypto.verify(null, Buffer.from(data), publicKeyPem, Buffer.from(signature, 'base64'));
-  } catch {
-    return false;
-  }
 }
 
 function blockHash(block) {

@@ -11,7 +11,7 @@ const { createServer } = require('../server');
 
 const NOW = Date.parse('2026-11-06T10:00:00Z');
 function freshApp() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockchain-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muratab-'));
   return { app: createApp({ dataDir: dir, now: () => NOW }), dir };
 }
 const row = (app, branchId, ingredientId) => app.inventory(branchId).find((r) => r.ingredientId === ingredientId);
