@@ -64,6 +64,33 @@ function buildRoutes(app) {
   on('GET', '/api/export', () => app.exportData());
   on('POST', '/api/import', ({ body }) => app.importData(body));
 
+  // restaurant profile (setup wizard + welcome screen)
+  on('GET', '/api/profile', () => app.profile.get());
+  on('PATCH', '/api/profile', ({ body }) => app.profile.update(body));
+  on('GET', '/api/profile/summary', () => app.profileSummary());
+  on('PUT', '/api/profile/branches', ({ body }) => app.profile.saveBranches(body.branches));
+  on('PUT', '/api/profile/ingredients', ({ body }) => app.profile.saveIngredients(body.ingredients));
+  on('DELETE', '/api/branches/:id', ({ p }) => app.deleteBranch(p.id));
+  on('GET', '/api/branches/:id/tables', ({ p }) => app.hub.tables(p.id));
+  on('PUT', '/api/branches/:id/tables', ({ p, body }) => app.profile.saveTables(p.id, body.tables));
+  on('GET', '/api/equipment', () => app.db.equipment || []);
+  on('PUT', '/api/equipment', ({ body }) => app.profile.saveEquipment(body.equipment));
+
+  // order hub
+  on('GET', '/api/orders', ({ q }) => app.hub.listOrders({ branchId: q.get('branchId'), status: q.get('status'), channel: q.get('channel'), limit: Number(q.get('limit')) || 50 }));
+  on('POST', '/api/orders/:id/:action', ({ p, body }) => app.hub.transition(p.id, p.action, body));
+
+  // ordering channels & delivery-platform integrations
+  on('GET', '/api/channels', () => app.channels());
+  on('PATCH', '/api/channels', ({ body }) => app.profile.updateChannels(body));
+  on('POST', '/api/integrations/:channel/orders', ({ p, body, headers }) => {
+    app.checkWebhook(p.channel, headers);
+    return app.hub.receiveExternal(p.channel, body).response; // the platform gets its own acknowledgement format
+  });
+  on('POST', '/api/integrations/:channel/simulate', ({ p, body }) => app.hub.simulateExternal(p.channel, body.branchId));
+  on('POST', '/api/integrations/:channel/menu', ({ p }) => app.hub.pushMenu(p.channel));
+  on('GET', '/api/integrations/log', ({ q }) => app.hub.integrationLog({ channel: q.get('channel') }));
+
   on('GET', '/api/ledger', () => app.ledgerBlocks());
   on('GET', '/api/ledger/verify', () => app.verifyLedger());
   return routes;
@@ -71,14 +98,14 @@ function buildRoutes(app) {
 
 function createRouter(app) {
   const routes = buildRoutes(app);
-  return async function route(method, url, body = {}) {
+  return async function route(method, url, body = {}, headers = {}) {
     const u = new URL(url, 'http://local');
     const r = routes.find((x) => x.method === method && x.re.test(u.pathname));
     if (!r) return { status: 404, data: { error: 'Not found' } };
     try {
       const m = u.pathname.match(r.re);
       const p = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
-      return { status: 200, data: await r.handler({ p, q: u.searchParams, body: body || {} }) };
+      return { status: 200, data: await r.handler({ p, q: u.searchParams, body: body || {}, headers }) };
     } catch (err) {
       const status = err.status || 500;
       if (status >= 500) console.error(err);

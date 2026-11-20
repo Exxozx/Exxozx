@@ -8,7 +8,7 @@
   <meta name="description" content="Muratab (مرتب, “neat”) – inventory, suppliers, live prices and branch transfers for restaurants and chains." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Noto+Kufi+Arabic:wght@600;700&display=swap" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Noto+Kufi+Arabic:wght@600;700&family=Noto+Sans+Arabic:wght@400;500;600;700&display=swap" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230f766e'/><path d='M8 11h16M8 16h16M8 21h10' stroke='white' stroke-width='3' stroke-linecap='round'/></svg>" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -22,19 +22,21 @@
       </div>
     </div>
     <nav class="tabs" role="tablist">
-      <button data-view="dashboard" class="active">Dashboard</button>
-      <button data-view="inventory">Inventory</button>
-      <button data-view="orders">Orders</button>
-      <button data-view="suppliers">Suppliers</button>
-      <button data-view="transfers">Transfers &amp; Ledger</button>
-      <button data-view="prices">Live prices</button>
-      <button data-view="setup">Setup</button>
+      <button data-view="home" data-i18n="Home" class="active">Home</button>
+      <button data-view="orders" data-i18n="Orders">Orders</button>
+      <button data-view="dashboard" data-i18n="Stock">Stock</button>
+      <button data-view="inventory" data-i18n="Inventory">Inventory</button>
+      <button data-view="suppliers" data-i18n="Suppliers">Suppliers</button>
+      <button data-view="transfers" data-i18n="Transfers & Ledger">Transfers &amp; Ledger</button>
+      <button data-view="prices" data-i18n="Live prices">Live prices</button>
+      <button data-view="setup" data-i18n="Setup">Setup</button>
     </nav>
     <button class="live-pill" id="livePill" data-view-link="prices" title="Live price feed">
       <span class="dot"></span><span id="liveText">Connecting…</span>
     </button>
+    <button class="btn sm lang-toggle" id="langToggle" type="button" lang="ar" title="Language / اللغة"><span data-i18n="العربية">العربية</span></button>
     <label class="branch-picker">
-      <span>Acting as</span>
+      <span data-i18n="Acting as">Acting as</span>
       <select id="branchSelect"></select>
     </label>
   </header>
@@ -44,6 +46,12 @@
   <div id="toast" class="toast" role="status"></div>
   <dialog id="modal"><form method="dialog" id="modalForm"></form></dialog>
 
+  <script src="i18n.js"></script>
+  <script src="i18n-ar.js"></script>
   <script src="app.js"></script>
+  <script src="home.js"></script>
+  <script src="wizard.js"></script>
+  <script src="orders.js"></script>
+  <script src="main.js"></script>
 </body>
 </html>

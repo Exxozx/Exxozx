@@ -14,6 +14,7 @@ function freshApp() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muratab-'));
   return { app: createApp({ dataDir: dir, now: () => NOW }), dir };
 }
+const r3 = (n) => Math.round(n * 1000) / 1000;
 const row = (app, branchId, ingredientId) => app.inventory(branchId).find((r) => r.ingredientId === ingredientId);
 
 test('orders deduct recipe ingredients from branch stock', () => {
@@ -93,13 +94,13 @@ test('request → dispatch → receive moves stock and is recorded on the ledger
   assert.throws(() => app.dispatchTransfer({ branchId: 'marina', transferId: req.id }), (e) => e.status === 403);
   const sent = app.dispatchTransfer({ branchId: 'airport', transferId: req.id });
   assert.equal(sent.status, 'in_transit');
-  assert.equal(row(app, 'airport', 'tomato').qty, a0 - 10);
+  assert.equal(row(app, 'airport', 'tomato').qty, r3(a0 - 10));
   assert.equal(row(app, 'downtown', 'tomato').incoming, 10);
 
   assert.throws(() => app.receiveTransfer(req.id, { branchId: 'airport' }), (e) => e.status === 403);
   const done = app.receiveTransfer(req.id, { branchId: 'downtown' });
   assert.equal(done.status, 'received');
-  assert.equal(row(app, 'downtown', 'tomato').qty, d0 + 10);
+  assert.equal(row(app, 'downtown', 'tomato').qty, r3(d0 + 10));
   assert.throws(() => app.receiveTransfer(req.id, { branchId: 'downtown' }));
 
   assert.equal(app.ledgerBlocks().length, blocks0 + 3);

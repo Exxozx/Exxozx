@@ -80,6 +80,12 @@ function applyBlock(state, block, prev, hqPublicKey) {
       }
       return errors;
     }
+    case 'MEMBER_REMOVE': {
+      if (block.validator !== HQ) return fail('only HQ may remove members'), errors;
+      if (!state.members.has(payload.branchId)) return fail('not a member'), errors;
+      state.members.delete(payload.branchId);
+      return errors;
+    }
     case 'TRANSFER_REQUEST': {
       if (!payload.transferId || t) return fail('transferId missing or already used'), errors;
       if (block.validator !== payload.toBranchId) return fail('only the requesting (receiving) branch may sign a request'), errors;

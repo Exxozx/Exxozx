@@ -4,6 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const { createApp } = require('./src/app');
 const { createRouter } = require('./src/routes');
+const { CHANNELS, httpTransport } = require('./src/integrations');
+
+function platformConfig() {
+  return Object.fromEntries(Object.keys(CHANNELS).map((c) => {
+    const k = c.toUpperCase();
+    return [c, { baseUrl: process.env[`${k}_API_URL`], token: process.env[`${k}_API_TOKEN`] }];
+  }));
+}
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
@@ -73,7 +81,7 @@ function createServer(app, hub = createPriceHub()) {
     } catch (err) {
       return send(res, err.status || 400, { error: err.message });
     }
-    const { status, data } = await route(req.method, url.pathname + url.search, body);
+    const { status, data } = await route(req.method, url.pathname + url.search, body, req.headers);
     send(res, status, data);
   });
 }
@@ -86,6 +94,10 @@ if (require.main === module) {
     priceFeedUrl: process.env.PRICE_FEED_URL,
     priceIntervalMs: Number(process.env.PRICE_INTERVAL_MS) || 5000,
     onPriceTick: hub.broadcast,
+    // Delivery platforms: set e.g. TALABAT_API_URL + TALABAT_API_TOKEN to send real status/menu
+    // updates, and TALABAT_WEBHOOK_SECRET to require that secret on incoming order webhooks.
+    transport: httpTransport(platformConfig()),
+    webhookSecrets: Object.fromEntries(Object.keys(CHANNELS).map((c) => [c, process.env[`${c.toUpperCase()}_WEBHOOK_SECRET`]]).filter(([, v]) => v)),
   });
   const port = Number(process.env.PORT) || 3000;
   createServer(app, hub).listen(port, () => {

@@ -40,14 +40,16 @@ async function main() {
   const read = (f) => fs.readFileSync(path.join(root, 'public', f), 'utf8');
   const html = read('index.html');
   const css = read('styles.css');
-  const ui = read('app.js');
   const safe = (js) => js.replace(/<\/script/gi, '<\\/script');
 
   const head = html.slice(html.indexOf('<head>') + 6, html.indexOf('</head>'))
     .replace('<link rel="stylesheet" href="styles.css" />', () => `<style>\n${css}</style>`);
   const body = html.slice(html.indexOf('<body>') + 6, html.indexOf('</body>'))
     // (function replacers: the code contains `$'`-style sequences that string replacement would expand)
-    .replace('<script src="app.js"></script>', () => `<script>${safe(engine)}</script>\n  <script>\n${safe(ui)}</script>`);
+    .replace(/<script src="([\w-]+\.js)"><\/script>/g, (m, file, offset, all) => {
+      const first = all.indexOf('<script src=') === offset;
+      return `${first ? `<script>${safe(engine)}</script>\n  ` : ''}<script>\n${safe(read(file))}</script>`;
+    });
 
   fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
   fs.writeFileSync(path.join(root, 'dist/muratab.html'), `<!doctype html>\n<html lang="en">\n<head>${head}</head>\n<body>${body}</body>\n</html>\n`);

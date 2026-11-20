@@ -9,6 +9,40 @@
 - **Fully editable.** The *Setup* tab lets you add, edit and delete dishes and their recipes, ingredients, suppliers and their catalogs, and branches. You can rename the business and change the currency, export everything to JSON and import it back, or start from a blank template. The demo data is just a starting point.
 - **Moves stock between branches on a blockchain.** Branches send and request stock through a shared, permissioned ledger. Every block is hash-linked and signed with the acting branch's Ed25519 key. It also suggests sending one branch's surplus to another branch's shortage before you buy more.
 
+## First visit: restaurant setup
+
+The first time Muratab opens, a setup wizard asks for everything the platform needs, once:
+
+1. **Welcome**: language (English / العربية, with full right-to-left layout), theme (system / light / dark) and accent colour. Then either start empty or start from the sample restaurant.
+2. **Restaurant & manager**: name, cuisine, manager's name and title, contact details, currency.
+3. **Locations & tables**: every branch with its address and hours, plus a floor plan of tables (name, seats, area). "Add 6 tables with 4 seats in Terrace" builds them in one click.
+4. **Ingredients & stock**: what you cook with and how much is on the shelf at each location.
+5. **Menu & favourites**: dishes, prices, categories, recipes, the channels each dish is sold on, and a ★ on your most popular dishes.
+6. **Kitchenware & utilities**: counts per location (appliances, cookware, tableware, gas, water filters…) with a minimum that flags shortages.
+7. **Ordering channels**: dine-in, takeaway, Talabat, Deliveroo, Careem, your own website, with each platform's store ID per location.
+8. **Review & finish**.
+
+Every step saves immediately, so setup can be resumed. Afterwards the **Home** screen greets the manager by name and shows the profile at a glance: locations and tables in use, best sellers and favourites, menu, stock, kitchenware below minimum, channels and today's numbers. Every card has an **Edit** button that reopens the matching step, so changing a menu or a floor plan takes seconds.
+
+## Orders and delivery apps
+
+All orders, whether dine-in (by table), takeaway or from delivery apps, follow one lifecycle on the **kitchen board**:
+
+`received → accepted → preparing → ready → completed` (or `rejected` / `cancelled`)
+
+Ingredients come out of stock when an order is **accepted**. They go back if the order is cancelled before cooking starts. Platform orders can be auto-accepted per channel. If they can't be made (unknown dish, not enough stock), they are rejected with a reason.
+
+**How a delivery app connects** (all platform-specific code is in `src/integrations.js`):
+
+| Direction | What happens |
+|---|---|
+| App → Muratab | The platform POSTs each order to `/api/integrations/<channel>/orders`. The adapter maps it to the right location (by store ID) and dishes (by item code), and replies in the platform's format. Repeated deliveries of the same order are ignored. If `<CHANNEL>_WEBHOOK_SECRET` is set, requests without it get a 401. |
+| Muratab → App | Accept / reject / ready / picked-up changes are sent to the platform's order-status API. When a dish sells out, an availability update is sent too, and "Send menu" pushes the full menu. These calls go out for real when `<CHANNEL>_API_URL` and `<CHANNEL>_API_TOKEN` are set (e.g. `TALABAT_API_URL`, `TALABAT_API_TOKEN`). Otherwise they are recorded as simulated. Every call in either direction appears under *Orders → Delivery apps*. |
+
+> **Before going live with Talabat or Deliveroo:** their integration APIs are only documented for approved partners. The Talabat adapter follows the publicly described shape of Delivery Hero's POS plugin API (order `token`/`code`, `products[].remoteCode`, `platformRestaurant.id`, status values such as `order_accepted`), and the Deliveroo adapter follows its Order API. Both must be checked field by field against the official spec you receive as a partner. Only `src/integrations.js` needs to change.
+
+In the prototype, *Simulate order* builds a realistic platform order and passes it through the same webhook code.
+
 ## Try the prototype (no install)
 
 Open **`dist/muratab.html`** in any modern browser (double-click it). That single file is the complete working app: the inventory engine, supplier ordering, live prices and the signed branch ledger all run inside the page. It needs no server and no internet (fonts fall back to system fonts offline). Your changes are saved in that browser. Use *Setup → Business & data* to export them or start again.
@@ -20,7 +54,7 @@ Requires Node.js 18+. Running the server needs no dependencies.
 ```bash
 cd muratab
 npm start          # http://localhost:3000
-npm test           # 19 tests: inventory, purchasing, transfers, ledger tampering, live prices, editing, import/export, HTTP + SSE
+npm test           # 28 tests: inventory, purchasing, transfers, ledger, live prices, editing, profile, orders, delivery-app webhooks
 npm install && npm run build   # rebuild dist/muratab.html after changing the code
 ```
 
@@ -117,6 +151,9 @@ Sending a PO to a supplier is simulated (it returns a confirmation number). `sen
 server.js           HTTP server (Node built-ins only)
 build.js            builds the standalone prototype into dist/
 src/routes.js       the API, shared by server and prototype
+src/profile.js      restaurant profile, locations & tables, kitchenware, home summary
+src/orders.js       order lifecycle, kitchen board, platform notifications
+src/integrations.js ordering channels + Talabat / Deliveroo / generic adapters
 src/crypto.js       signing/hashing (Node)      web/crypto-browser.js  (browser)
 src/storage.js      JSON-file storage (Node)    web/storage-browser.js (browser)
 web/standalone.js   prototype entry: runs the back end in the page
@@ -125,7 +162,8 @@ src/inventory.js    forecasting, status, supplier ranking, transfer matching
 src/blockchain.js   signed hash-chained ledger and verification
 src/app.js          business logic and persistence
 src/seed.js         demo chain data
-public/             web UI (vanilla JS), used by both
+public/             web UI (vanilla JS), used by both: app.js (stock, suppliers, ledger, prices),
+                    home.js, wizard.js, orders.js, i18n.js + i18n-ar.js (Arabic), main.js
 dist/muratab.html   the built prototype – open it in a browser
 test/               node:test suite
 ```

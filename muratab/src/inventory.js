@@ -26,7 +26,7 @@ function dailyUsage(orders, branchId, now) {
   const totals = {};
   let earliest = now;
   for (const o of orders) {
-    if (o.branchId !== branchId) continue;
+    if (o.branchId !== branchId || !o.consumption) continue; // rejected / not yet accepted orders used nothing
     const t = Date.parse(o.at);
     if (t < since || t > now) continue;
     earliest = Math.min(earliest, t);

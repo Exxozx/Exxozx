@@ -5,6 +5,9 @@ const inv = require('./inventory');
 const { buildSeedData } = require('./seed');
 const { createPriceFeed, simulatedSource, httpSource } = require('./prices');
 const { defaultStorage } = require('./storage');
+const { createOrderHub } = require('./orders');
+const { createProfileService } = require('./profile');
+const { CHANNELS, DEFAULT_CHANNEL_CONFIG, simulatedTransport } = require('./integrations');
 
 const OPEN_PO = ['draft', 'sent'];
 
@@ -16,6 +19,9 @@ function createApp({
   priceFeedUrl,
   priceIntervalMs = 5000,
   onPriceTick = () => {},
+  transport = simulatedTransport, // how platform calls (Talabat etc.) are sent; the server passes a real one
+  webhookSecrets = {}, // per-channel shared secrets the server checks on incoming webhooks
+  rand = Math.random,
 } = {}) {
   let db;
   let keys;
@@ -69,6 +75,16 @@ function createApp({
     requestTransfer({ branchId: 'downtown', fromBranchId: 'marina', lines: [{ ingredientId: 'salmon', qty: 1.5 }], note: 'Dinner rush' });
     const po = createPurchaseOrder({ branchId: 'downtown', supplierId: 'al-noor-dairy', lines: [{ ingredientId: 'mozzarella', qty: 20 }] });
     sendPurchaseOrder(po.id);
+    // Live orders, so the kitchen board and tables start in a realistic state.
+    const table = (label) => db.branches.find((b) => b.id === 'downtown').tables.find((x) => x.label === label).id;
+    const dine = hub.placeOrder('downtown', { channel: 'dine_in', tableId: table('T3'), items: [{ menuItemId: 'classic-burger', qty: 2 }, { menuItemId: 'fries', qty: 2 }] });
+    hub.transition(dine.id, 'start');
+    hub.placeOrder('downtown', { channel: 'dine_in', tableId: table('T7'), items: [{ menuItemId: 'margherita', qty: 1 }, { menuItemId: 'garden-salad', qty: 2 }], notes: 'Birthday table' });
+    hub.placeOrder('downtown', { channel: 'takeaway', customer: { name: 'Hamad' }, items: [{ menuItemId: 'chicken-bowl', qty: 1 }] });
+    const dr = hub.simulateExternal('deliveroo', 'downtown').order;
+    if (dr.status === 'accepted') hub.transition(dr.id, 'ready');
+    hub.simulateExternal('talabat', 'downtown');
+    hub.simulateExternal('talabat', 'marina');
   }
 
   // ---------- lookups ----------
@@ -149,6 +165,7 @@ function createApp({
     stock[ingredientId] = round(after, 3);
     const entry = { id: uid('adj'), branchId, ingredientId, before, after: stock[ingredientId], reason, at: iso() };
     db.adjustments.push(entry);
+    hub.syncAvailability(branchId);
     save();
     return entry;
   }
@@ -166,33 +183,9 @@ function createApp({
     return b;
   }
 
-  // ---------- orders ----------
-  function placeOrder(branchId, { items }) {
-    branch(branchId);
-    assert(Array.isArray(items) && items.length > 0, 400, 'Order must contain items');
-    const clean = items
-      .map((i) => ({ menuItemId: i.menuItemId, qty: Math.floor(Number(i.qty)) }))
-      .filter((i) => i.qty > 0);
-    assert(clean.length > 0, 400, 'Order must contain at least one item with positive quantity');
-    let consumption;
-    try {
-      consumption = inv.consumptionFor(db.menu, clean);
-    } catch (e) {
-      throw new HttpError(400, e.message);
-    }
-    const lines = Object.entries(consumption).map(([ingredientId, qty]) => ({ ingredientId, qty }));
-    requireStock(branchId, lines);
-    moveStock(branchId, lines, -1);
-    const total = clean.reduce((s, i) => s + i.qty * db.menu.find((m) => m.id === i.menuItemId).price, 0);
-    const order = { id: uid('ord'), branchId, at: iso(), items: clean, total, consumption, source: 'pos' };
-    db.orders.push(order);
-    save();
-    return order;
-  }
-
-  function listOrders(branchId, limit = 25) {
-    return db.orders.filter((o) => !branchId || o.branchId === branchId).slice(-limit).reverse();
-  }
+  // ---------- orders (see orders.js for the full lifecycle) ----------
+  const placeOrder = (branchId, body) => hub.placeOrder(branchId, body);
+  const listOrders = (branchId, limit = 25) => hub.listOrders({ branchId, limit });
 
   function menuAvailability(branchId) {
     branch(branchId);
@@ -268,6 +261,7 @@ function createApp({
     moveStock(po.branchId, po.lines, +1);
     po.status = 'received';
     po.receivedAt = iso();
+    hub.syncAvailability(po.branchId);
     save();
     return po;
   }
@@ -337,6 +331,7 @@ function createApp({
     assert(t.toBranchId === branchId, 403, 'Only the receiving branch can confirm receipt');
     signAs(branchId, { type: 'TRANSFER_RECEIVE', payload: { transferId: id, lines: t.lines } });
     moveStock(branchId, t.lines, +1);
+    hub.syncAvailability(branchId);
     save();
     return transfer(id);
   }
@@ -451,7 +446,22 @@ function createApp({
       name: text(body.name, 'Dish name'),
       price: round(number(body.price, 'Price'), 2),
       recipe: cleanRecipe(body.recipe),
+      category: text(body.category || 'Mains', 'Category', { max: 40 }),
+      description: text(body.description, 'Description', { required: false, max: 200 }),
+      popular: Boolean(body.popular),
     };
+    if (body.channels !== undefined) {
+      assert(Array.isArray(body.channels) && body.channels.every((c) => CHANNELS[c]), 400, 'Unknown ordering channel');
+      data.channels = body.channels;
+    }
+    if (body.externalCodes !== undefined) {
+      data.externalCodes = {};
+      for (const [c, code] of Object.entries(body.externalCodes || {})) {
+        assert(CHANNELS[c], 400, `Unknown ordering channel: ${c}`);
+        const v = text(code, 'Platform item code', { required: false, max: 60 });
+        if (v) data.externalCodes[c] = v;
+      }
+    }
     if (id) {
       const m = find404(db.menu, id, 'menu item');
       Object.assign(m, data);
@@ -542,8 +552,26 @@ function createApp({
     const b = branch(id);
     if (body.name !== undefined) b.name = text(body.name, 'Branch name', { max: 60 });
     if (body.location !== undefined) b.location = text(body.location, 'Location', { required: false, max: 80 });
+    if (body.phone !== undefined) b.phone = text(body.phone, 'Phone', { required: false, max: 30 });
+    if (body.hours !== undefined) b.hours = text(body.hours, 'Opening hours', { required: false, max: 60 });
     save();
     return b;
+  }
+
+  /** Close a location. HQ records the removal on the ledger; its history stays verifiable. */
+  function deleteBranch(id) {
+    const b = branch(id);
+    assert(db.branches.length > 1, 409, 'A restaurant needs at least one location');
+    assert(!ledger.transfers().some((t) => (t.fromBranchId === id || t.toBranchId === id) && ['requested', 'in_transit'].includes(t.status)), 409,
+      `${b.name} has transfers in progress – finish or cancel them first`);
+    assert(!db.purchaseOrders.some((p) => p.branchId === id && OPEN_PO.includes(p.status)), 409, `${b.name} has open purchase orders – receive or cancel them first`);
+    assert(!db.orders.some((o) => o.branchId === id && hub.ACTIVE.includes(o.status)), 409, `${b.name} has orders in the kitchen – complete them first`);
+    ledger.append({ type: 'MEMBER_REMOVE', payload: { branchId: id } }, HQ, keys.hq.privateKey, iso());
+    db.branches = db.branches.filter((x) => x.id !== id);
+    delete db.stock[id];
+    for (const c of Object.values(db.channels || {})) if (c.storeIds) delete c.storeIds[id];
+    save();
+    return { deleted: id };
   }
 
   function updateMeta(body = {}) {
@@ -554,7 +582,7 @@ function createApp({
   }
 
   // ---------- export / import (work on a draft data set, share it, load it back) ----------
-  const DATA_KEYS = ['meta', 'branches', 'ingredients', 'menu', 'suppliers', 'stock', 'orders', 'adjustments', 'purchaseOrders'];
+  const DATA_KEYS = ['meta', 'profile', 'branches', 'ingredients', 'menu', 'suppliers', 'stock', 'orders', 'adjustments', 'purchaseOrders', 'equipment', 'channels'];
 
   function exportData() {
     return {
@@ -586,6 +614,10 @@ function createApp({
       orders: d.orders || [],
       adjustments: d.adjustments || [],
       purchaseOrders: d.purchaseOrders || [],
+      profile: d.profile || undefined,
+      equipment: d.equipment || [],
+      channels: { ...DEFAULT_CHANNEL_CONFIG(), ...(d.channels || {}) },
+      integrationLog: [],
       chain: [],
     };
     for (const b of next.branches) next.stock[b.id] ||= {};
@@ -613,7 +645,7 @@ function createApp({
     const branches = db.branches.map((b) => {
       const rows = reports[b.id];
       const count = (s) => rows.filter((r) => r.status === s).length;
-      const recent = db.orders.filter((o) => o.branchId === b.id && Date.parse(o.at) >= cutoff);
+      const recent = db.orders.filter((o) => o.branchId === b.id && Date.parse(o.at) >= cutoff && !['rejected', 'cancelled'].includes(o.status));
       return {
         id: b.id,
         name: b.name,
@@ -652,7 +684,26 @@ function createApp({
     },
   });
 
+  // ---------- order hub & restaurant profile ----------
+  const ctx = {
+    get db() { return db; },
+    save, iso, branch, stockOf, requireStock, moveStock, transport, rand, text, number,
+    inventory: (id) => inventory(id),
+    createBranch, updateBranch, deleteBranch, saveIngredient, deleteIngredient,
+  };
+  const hub = createOrderHub(ctx);
+  const profile = createProfileService(ctx);
+
+  /** Shared-secret check for platform webhooks (only enforced when a secret is configured). */
+  function checkWebhook(channel, headers = {}) {
+    const secret = webhookSecrets[channel];
+    if (!secret) return;
+    const got = String(headers.authorization || headers['x-muratab-secret'] || '').replace(/^Bearer\s+/i, '');
+    assert(got === secret, 401, 'Webhook secret is missing or wrong');
+  }
+
   load();
+  profile.get(); // fills in profile, channel and kitchenware defaults for older saved data
   feed.warmup();
   if (livePrices) feed.start();
 
@@ -660,6 +711,9 @@ function createApp({
     get db() { return db; },
     get ledger() { return ledger; },
     reset, overview,
+    profile, hub, checkWebhook, deleteBranch,
+    profileSummary: () => profile.summary(now()),
+    channels: () => ({ list: Object.values(CHANNELS), config: db.channels }),
     branches: () => db.branches,
     ingredients: () => db.ingredients,
     menu: () => db.menu,

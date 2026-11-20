@@ -23,25 +23,25 @@ const INGREDIENTS = [
 ];
 
 const MENU = [
-  { id: 'classic-burger', name: 'Classic Burger', price: 42, recipe: [
+  { id: 'classic-burger', name: 'Classic Burger', category: 'Burgers', popular: true, price: 42, recipe: [
     { ingredientId: 'burger-bun', qty: 1 }, { ingredientId: 'beef-patty', qty: 1 }, { ingredientId: 'cheddar', qty: 0.03 },
     { ingredientId: 'lettuce', qty: 0.02 }, { ingredientId: 'tomato', qty: 0.03 }, { ingredientId: 'onion', qty: 0.015 } ] },
-  { id: 'chicken-burger', name: 'Crispy Chicken Burger', price: 38, recipe: [
+  { id: 'chicken-burger', name: 'Crispy Chicken Burger', category: 'Burgers', popular: false, price: 38, recipe: [
     { ingredientId: 'burger-bun', qty: 1 }, { ingredientId: 'chicken-breast', qty: 0.15 },
     { ingredientId: 'lettuce', qty: 0.02 }, { ingredientId: 'tomato', qty: 0.03 }, { ingredientId: 'frying-oil', qty: 0.01 } ] },
-  { id: 'fries', name: 'Fries', price: 15, recipe: [
+  { id: 'fries', name: 'Fries', category: 'Sides', popular: false, price: 15, recipe: [
     { ingredientId: 'potato', qty: 0.25 }, { ingredientId: 'frying-oil', qty: 0.02 } ] },
-  { id: 'margherita', name: 'Margherita Pizza', price: 48, recipe: [
+  { id: 'margherita', name: 'Margherita Pizza', category: 'Pizza & Pasta', popular: true, price: 48, recipe: [
     { ingredientId: 'flour', qty: 0.25 }, { ingredientId: 'mozzarella', qty: 0.15 }, { ingredientId: 'tomato-sauce', qty: 0.1 } ] },
-  { id: 'penne-alfredo', name: 'Penne Alfredo', price: 52, recipe: [
+  { id: 'penne-alfredo', name: 'Penne Alfredo', category: 'Pizza & Pasta', popular: false, price: 52, recipe: [
     { ingredientId: 'pasta', qty: 0.12 }, { ingredientId: 'cream', qty: 0.1 },
     { ingredientId: 'mozzarella', qty: 0.02 }, { ingredientId: 'onion', qty: 0.01 } ] },
-  { id: 'chicken-bowl', name: 'Chicken Rice Bowl', price: 45, recipe: [
+  { id: 'chicken-bowl', name: 'Chicken Rice Bowl', category: 'Bowls & Grills', popular: false, price: 45, recipe: [
     { ingredientId: 'rice', qty: 0.15 }, { ingredientId: 'chicken-breast', qty: 0.18 },
     { ingredientId: 'onion', qty: 0.02 }, { ingredientId: 'tomato', qty: 0.04 } ] },
-  { id: 'grilled-salmon', name: 'Grilled Salmon', price: 89, recipe: [
+  { id: 'grilled-salmon', name: 'Grilled Salmon', category: 'Bowls & Grills', popular: true, price: 89, recipe: [
     { ingredientId: 'salmon', qty: 0.2 }, { ingredientId: 'rice', qty: 0.12 }, { ingredientId: 'lettuce', qty: 0.03 } ] },
-  { id: 'garden-salad', name: 'Garden Salad', price: 32, recipe: [
+  { id: 'garden-salad', name: 'Garden Salad', category: 'Salads', popular: false, price: 32, recipe: [
     { ingredientId: 'lettuce', qty: 0.1 }, { ingredientId: 'tomato', qty: 0.08 }, { ingredientId: 'onion', qty: 0.03 } ] },
 ];
 
@@ -64,10 +64,39 @@ const SUPPLIERS = [
 ];
 
 const BRANCHES = [
-  { id: 'downtown', name: 'Downtown', location: 'Downtown Dubai', demand: 1.25 },
-  { id: 'marina', name: 'Marina', location: 'Dubai Marina', demand: 1.0 },
-  { id: 'airport', name: 'Airport T3', location: 'DXB Terminal 3', demand: 0.8 },
+  { id: 'downtown', name: 'Downtown', location: 'Downtown Dubai', phone: '+971 4 555 0101', hours: '10:00 – 24:00', demand: 1.25, tables: { Indoor: [2, 2, 4, 4, 4, 4, 6, 6, 8], Terrace: [2, 4, 4, 4] } },
+  { id: 'marina', name: 'Marina', location: 'Dubai Marina', phone: '+971 4 555 0202', hours: '11:00 – 01:00', demand: 1.0, tables: { Indoor: [2, 2, 4, 4, 4, 6], Terrace: [2, 2, 4, 4, 6] } },
+  { id: 'airport', name: 'Airport T3', location: 'DXB Terminal 3', phone: '+971 4 555 0303', hours: 'Open 24 hours', demand: 0.8, tables: { Concourse: [2, 2, 2, 2, 4, 4, 4, 4] } },
 ];
+
+// [name, category, counts per branch (downtown, marina, airport), minimum per branch]
+const EQUIPMENT = [
+  ['Deep fryer', 'Appliances', [3, 2, 2], 2],
+  ['Flat-top grill', 'Appliances', [2, 1, 1], 1],
+  ['Pizza oven', 'Appliances', [1, 1, 0], null],
+  ['Walk-in chiller', 'Appliances', [1, 1, 1], 1],
+  ['Chef knives', 'Utensils', [12, 8, 6], 6],
+  ['Frying pans', 'Cookware', [16, 10, 8], 8],
+  ['Stock pots', 'Cookware', [6, 4, 3], 3],
+  ['Dinner plates', 'Tableware', [220, 160, 90], 100],
+  ['Glasses', 'Tableware', [260, 180, 110], 120],
+  ['Cutlery sets', 'Tableware', [240, 170, 100], 100],
+  ['Gas cylinders', 'Utilities', [6, 4, 0], 4],
+  ['Water filter cartridges', 'Utilities', [4, 1, 3], 2],
+  ['Fire extinguishers', 'Utilities', [4, 4, 3], 3],
+  ['Floor cleaning kits', 'Cleaning', [3, 2, 2], 2],
+];
+
+// Delivery-app store IDs per branch (as issued by each platform).
+const CHANNEL_SETUP = {
+  dine_in: { enabled: true },
+  takeaway: { enabled: true },
+  talabat: { enabled: true, autoAccept: false, prepMinutes: 20, storeIds: { downtown: 'TLB-DXB-40211', marina: 'TLB-DXB-40212', airport: 'TLB-DXB-40213' } },
+  deliveroo: { enabled: true, autoAccept: true, prepMinutes: 20, storeIds: { downtown: 'DRO-58821', marina: 'DRO-58822' } },
+  careem: { enabled: false, autoAccept: false, prepMinutes: 20, storeIds: {} },
+  website: { enabled: false, autoAccept: true, prepMinutes: 15, storeIds: {} },
+};
+const CHANNEL_MIX = [['dine_in', 0.5], ['takeaway', 0.12], ['talabat', 0.26], ['deliveroo', 0.12]];
 
 const BASE_DAILY_DEMAND = {
   'classic-burger': 60, 'chicken-burger': 40, fries: 90, margherita: 35,
@@ -95,10 +124,19 @@ function mulberry32(seed) {
 
 function buildSeedData(now) {
   const rand = mulberry32(20261106);
-  const branches = BRANCHES.map(({ demand, ...b }) => ({
-    ...b,
-    settings: { safetyDays: 2, targetDays: 5, maxDays: 14 },
-  }));
+  const branches = BRANCHES.map(({ demand, tables, ...b }) => {
+    let n = 0;
+    return {
+      ...b,
+      settings: { safetyDays: 2, targetDays: 5, maxDays: 14 },
+      tables: Object.entries(tables).flatMap(([area, seats]) => seats.map((s) => (n++, { id: `${b.id}-t${n}`, label: `${area === 'Terrace' ? 'P' : 'T'}${n}`, seats: s, area }))),
+    };
+  });
+  const pickChannel = () => {
+    let r = rand();
+    for (const [c, w] of CHANNEL_MIX) if ((r -= w) <= 0) return c;
+    return 'dine_in';
+  };
 
   const orders = [];
   let seq = 1;
@@ -115,11 +153,15 @@ function buildSeedData(now) {
           }))
           .filter((i) => i.qty > 0);
         const total = items.reduce((s, i) => s + i.qty * MENU.find((m) => m.id === i.menuItemId).price, 0);
+        const channel = pickChannel();
         orders.push({
-          id: `ord-${String(seq++).padStart(5, '0')}`,
+          id: `ord-${String(seq).padStart(5, '0')}`,
+          number: 1000 + seq++,
           branchId: b.id,
+          channel,
+          status: 'completed',
           at: new Date(at).toISOString(),
-          items,
+          items: items.map((i) => ({ ...i, name: MENU.find((m) => m.id === i.menuItemId).name, unitPrice: MENU.find((m) => m.id === i.menuItemId).price })),
           total,
           consumption: consumptionFor(MENU, items),
           source: 'pos-history',
@@ -142,7 +184,23 @@ function buildSeedData(now) {
   }
 
   return structuredClone({
-    meta: { chainName: 'Saffron & Salt Group', currency: 'AED', seededAt: new Date(now).toISOString() },
+    meta: { chainName: 'Saffron & Salt Group', currency: 'AED', seededAt: new Date(now).toISOString(), orderSeq: seq + 1000 },
+    profile: {
+      setupComplete: false,
+      setupStep: 0,
+      cuisine: 'Casual dining · burgers, pizza & grills',
+      managerName: '',
+      managerTitle: 'General Manager',
+      phone: '+971 4 555 0100',
+      email: 'hello@saffronandsalt.example',
+      preferences: { theme: 'system', accent: 'teal', language: 'en' },
+    },
+    equipment: EQUIPMENT.map(([name, category, counts, minimum], i) => ({
+      id: `eq-${i + 1}`, name, category, minimum,
+      counts: Object.fromEntries(BRANCHES.map((b, k) => [b.id, counts[k]])),
+    })),
+    channels: CHANNEL_SETUP,
+    integrationLog: [],
     branches,
     ingredients: INGREDIENTS,
     menu: MENU,
